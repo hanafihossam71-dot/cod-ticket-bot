@@ -411,16 +411,24 @@ class AdminApprovalView(View):
             if len(thread_title) > 95:
                 thread_title = thread_title[:95]
 
+            # تصميم فخم واحترافي للغاية مطابق لمتاجر الكبار مع ألوان متناسقة وفواصل أنيقة
             pro_market_embed = discord.Embed(
-                title=f"⚡ {self.offer_title.upper()}",
-                description="```yaml\nSTATUS: VERIFIED & AVAILABLE FOR PURCHASE\nESCROW: 100% SECURE VIA ADMIN TRANSFER```",
-                color=0xF59E0B,
+                title=f"👑 ┃ {self.offer_title.upper()}",
+                description=(
+                    "```prolog\n"
+                    "💎 OFFICIAL PEDRAO22K VERIFIED MARKETPLACE 💎\n"
+                    "==============================================\n"
+                    "• STATUS : 🟢 100% VERIFIED & READY FOR INSTANT ESCROW\n"
+                    "• SAFETY : 🛡️ SECURE ADMIN TRANSFER & FULL ACCESS\n"
+                    "```"
+                ),
+                color=0xFFB800,  # لون ذهبي فخم
                 timestamp=datetime.datetime.utcnow()
             )
-            pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`${self.price_num} USD`** *(Crypto Payment)*", inline=True)
-            pro_market_embed.add_field(name="🎮 Game / Category", value="> **`Call of Duty: Warzone / MW3`**", inline=True)
-            pro_market_embed.add_field(name="📋 Account Details & Summary", value=f"```{self.description}```", inline=False)
-            pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to open order")
+            pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`💲 {self.price_num} USD`** *(Crypto Payment)*", inline=True)
+            pro_market_embed.add_field(name="🎮 Game / Platform", value="> **`Call of Duty • Warzone / MW3`**", inline=True)
+            pro_market_embed.add_field(name="📋 Account Details & Overview", value=f"```yaml\n{self.description}\n```", inline=False)
+            pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to securely purchase")
 
             if self.images:
                 pro_market_embed.set_image(url=self.images[0])
@@ -454,8 +462,8 @@ class AdminApprovalView(View):
             self.reject.disabled = True
             self.sold_btn.disabled = False
             
-            await interaction.message.edit(content="✅ **Listing Published to Forum Marketplace!**", view=self)
-            await interaction.followup.send("✅ تم نشر العرض بنجاح في المنتدى كمنشور فخم ومنسق!", ephemeral=True)
+            await interaction.message.edit(content="✅ **Listing Published with Luxury Store Layout!**", view=self)
+            await interaction.followup.send("✅ تم نشر العرض بتصميم المتجر الفخم في المنتدى بنجاح!", ephemeral=True)
 
             if self.launcher_msg:
                 try:
