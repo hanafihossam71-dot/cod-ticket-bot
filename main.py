@@ -472,6 +472,7 @@ class MarketplaceLauncherView(View):
         if existing:
             return await interaction.followup.send(f"⚠️ You already have an open seller ticket: {existing.mention}", ephemeral=True)
 
+        # قفل الكتابة وإرفاق الملفات على البائع فور إنشاء التذكرة
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=False, attach_files=False),
@@ -1076,22 +1077,37 @@ async def handle_finalize_listing(request):
                 view=approval_view
             )
 
+        # بطاقة تأكيد فخمة واحترافية للبائع في التذكرة
         submitted_embed = discord.Embed(
-            title="✅ LISTING SUBMITTED TO STAFF",
+            title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
             description=(
-                f"**Asking Price:** `{formatted_price}`\n"
-                f"**Screenshots:** `{len(discord_cdn_urls)} photos attached`\n\n"
+                f"Thank you {seller.mention}! Your Call of Duty account listing has been securely recorded and dispatched to our moderation queue.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🎉 **Your listing details and all screenshots have been dispatched directly to Staff!**\n"
-                "Our verification team is currently inspecting your proofs. You will receive a direct notification once approved."
+                "### 📋 SUBMISSION OVERVIEW:\n"
+                f"> 💰 **Asking Price:** `{formatted_price}`\n"
+                f"> 📸 **Screenshots Verified:** `{len(discord_cdn_urls)} proofs uploaded`\n"
+                "> ⏳ **Current Status:** `Pending Admin Verification`\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "### 📌 WHAT HAPPENS NEXT?\n"
+                "1️⃣ **Inspection:** Staff is currently verifying that all screenshots follow our safety guidelines (no nicknames or personal handles).\n"
+                "2️⃣ **Marketplace Release:** Once approved, your account will be immediately featured on <#1552628139618734170>.\n"
+                "3️⃣ **Direct Alert:** You will receive a direct notification the second a buyer opens an escrow deal.\n\n"
+                "⚠️ **IMPORTANT NOTICE:**\n"
+                "**PLEASE WAIT PATIENTLY FOR THE ADMIN TO APPROVE YOUR OFFER!**\n"
+                "Do not create duplicate tickets or spam staff. You will be updated here shortly."
             ),
             color=0x10B981,
             timestamp=datetime.datetime.utcnow()
         )
+        if seller.display_avatar:
+            submitted_embed.set_thumbnail(url=seller.display_avatar.url)
+        submitted_embed.set_footer(text="Pedrao22k Services • Secure Escrow & Fast Response")
+
         try:
+            # تعديل رسالة الزر لتصبح البطاقة الاحترافية
             await launcher_msg.edit(embed=submitted_embed, view=None)
-            # إرسال رسالة منشن إضافية للتأكيد على البائع بالانتظار
-            await ticket_channel.send(f"{seller.mention} **WAIT FOR THE ADMIN TO APPROVE YOUR OFFER!** ⏳")
+            # منشن إضافي لضمان تنبيه البائع
+            await ticket_channel.send(f"🔔 {seller.mention} **Your offer was submitted! Please wait for staff review.** ⏳")
         except Exception as e:
             print(f"Error updating launcher message: {e}")
 
