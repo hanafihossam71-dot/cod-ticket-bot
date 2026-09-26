@@ -6,7 +6,7 @@ import io
 import datetime
 import os
 import uuid
-from aiohttp import web
+from aiohttp import web, ClientSession
 
 # ======================== بيانات السيرفر والتصنيفات ========================
 TOKEN = "MTU1MjYzNzE5ODU2NDcyMDY0Mg.GvL5lw.gphQoQCUDDY70PZRCdkYe_M3YZVDCK-tHMUzgc"
@@ -16,9 +16,11 @@ SUPPORT_ROLE_ID = 1552628903481184336            # آيدي رتبة Admin
 TICKET_CATEGORY_ID = 1552642061608419408       # تصنيف تذاكر الطلبات العامة (Tickets ✅)
 SELL_CATEGORY_ID = 1552642160992591892           # تصنيف تذاكر بيع الحسابات
 TICKET_LOGS_CHANNEL_ID = 1552640603639259207     # روم حفظ سجلات التذاكر المحذوفة
-MARKETPLACE_CHANNEL_ID = 1553436681611386961     # روم الـ Forum الجديد للمعروضات
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
+
+# رابط الـ Webhook الخاص بالمتجر
+MARKETPLACE_WEBHOOK_URL = "https://discord.com/api/webhooks/1553522939477893213/kruGOJaG4CD1W-atei0tq6ymLyd1VrFHCc0HsE26l9i74Ael-scnnnKZpTcKPIjfR-hw"
 
 WEB_PORT = int(os.environ.get("PORT", 8080))
 BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
@@ -365,7 +367,6 @@ class AdminApprovalView(View):
         self.count_str = count_str
         self.current_index = 0
         self.posted_market_message = None
-        self.created_thread = None
         self.update_carousel()
 
     def update_carousel(self):
@@ -398,17 +399,10 @@ class AdminApprovalView(View):
             self.update_carousel()
             await interaction.response.edit_message(embed=self.embed_data, view=self)
 
-    @discord.ui.button(label="Approve & Post to Forum", style=discord.ButtonStyle.success, emoji="✅", row=1)
+    @discord.ui.button(label="Approve & Post to Marketplace", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def approve(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer()
-        market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
         
-        # الطريقة الأولى: بناء عنوان بوست فخم وبسيط يجذب العين فوراً
-        thread_title = f"⚡ [${self.price_num} USD] • {self.offer_title}"
-        if len(thread_title) > 95:
-            thread_title = thread_title[:95]
-
-        # بناء Embed منسق باحترافية تامة كالمتاجر الكبرى
         pro_market_embed = discord.Embed(
             title=f"⚡ {self.offer_title.upper()}",
             description="```yaml\nSTATUS: VERIFIED & AVAILABLE FOR PURCHASE\nESCROW: 100% SECURE VIA ADMIN TRANSFER```",
@@ -423,55 +417,36 @@ class AdminApprovalView(View):
         if self.images:
             pro_market_embed.set_image(url=self.images[0])
 
-        available_tag = None
-        if hasattr(market_channel, 'available_tags'):
-            for tag in market_channel.available_tags:
-                if "avail" in tag.name.lower():
-                    available_tag = tag
-                    break
-
-        applied_tags = [available_tag] if available_tag else []
-
-        if market_channel and isinstance(market_channel, discord.ForumChannel):
-            market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
-            thread_with_message = await market_channel.create_thread(
-                name=thread_title,
+        market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
+        
+        # إرسال المعروض عبر الـ Webhook مباشرة بشكل احترافي وخرافي
+        webhook_msg_url = "#"
+        async with ClientSession() as session:
+            webhook = discord.Webhook.from_url(MARKETPLACE_WEBHOOK_URL, session=session)
+            
+            # تجهيز الأزرار عبر الـ Webhook
+            payload_message = await webhook.send(
                 embed=pro_market_embed,
                 view=market_view,
-                applied_tags=applied_tags
+                username="Pedrao22k Services",
+                avatar_url="https://cdn.discordapp.com/emojis/1100000000000000000.png" if interaction.guild.icon is None else interaction.guild.icon.url,
+                wait=True
             )
-            self.posted_market_message = thread_with_message.message
-            self.created_thread = thread_with_message.thread
-        else:
-            market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
-            self.posted_market_message = await market_channel.send(embed=pro_market_embed, view=market_view)
-            self.created_thread = None
+            webhook_msg_url = payload_message.jump_url
+            self.posted_market_message = payload_message
 
         button.disabled = True
         self.reject.disabled = True
         self.sold_btn.disabled = False
-        await interaction.edit_original_response(content="✅ **Listing Published with Pro Layout! Click 'Mark as SOLD' when completed.**", view=self)
-        
-        market_link = self.posted_market_message.jump_url if self.posted_market_message else "#accounts-for-sale"
+        await interaction.edit_original_response(content="✅ **Listing Published via Webhook with Pro Layout!**", view=self)
 
         if self.launcher_msg:
             try:
                 approved_embed = discord.Embed(
                     title="🎉 LISTING APPROVED & PUBLISHED ON MARKETPLACE",
                     description=(
-                        f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** to our marketplace.\n\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        "### 📋 LISTING DETAILS:\n"
-                        f"> 🏷️ **Offer Title:** `{self.offer_title}`\n"
-                        f"> 💰 **Asking Price:** `${self.price_num} USD`\n"
-                        f"> 📸 **Screenshots:** `{self.count_str}`\n"
-                        "> ✅ **Current Status:** `Live in Marketplace`\n"
-                        f"> 🔗 **Listing URL:** [Click to View on Market]({market_link})\n\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        "### 🛡️ NEXT ESCROW STEPS:\n"
-                        "1️⃣ Your account is now visible to all buyers in <#1553436681611386961>.\n"
-                        "2️⃣ When a buyer opens a purchase order, an admin will ping you right here.\n"
-                        "3️⃣ Never transfer credentials outside of this ticket under any circumstances."
+                        f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** via Webhook.\n\n"
+                        f"🔗 **Listing URL:** [Click to View on Market]({webhook_msg_url})\n"
                     ),
                     color=0x10B981,
                     timestamp=datetime.datetime.utcnow()
@@ -484,7 +459,7 @@ class AdminApprovalView(View):
                 print(f"Error editing launcher to approved: {e}")
 
         try:
-            await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your listing is now live!** Check it here: {market_link}")
+            await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your listing is now live!** Check it here: {webhook_msg_url}")
         except:
             pass
 
@@ -512,22 +487,16 @@ class AdminApprovalView(View):
             sold_embed.set_footer(text="Pedrao22k. | 🔒 This account has been successfully sold.")
 
             sold_view = MarketplaceCarouselView(images=self.images, embed_data=sold_embed, is_sold=True)
-            await self.posted_market_message.edit(embed=sold_embed, view=sold_view)
-
-        if hasattr(self, 'created_thread') and self.created_thread:
-            try:
-                sold_tag = None
-                for tag in self.created_thread.parent.available_tags:
-                    if "close" in tag.name.lower() or "sold" in tag.name.lower():
-                        sold_tag = tag
-                        break
-                if sold_tag:
-                    await self.created_thread.edit(applied_tags=[sold_tag], locked=True)
-            except Exception as e:
-                print(f"Error locking thread: {e}")
+            async with ClientSession() as session:
+                webhook = discord.Webhook.from_url(MARKETPLACE_WEBHOOK_URL, session=session)
+                await webhook.edit_message(
+                    self.posted_market_message.id,
+                    embed=sold_embed,
+                    view=sold_view
+                )
 
         button.disabled = True
-        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT in the marketplace! Buy button is now disabled.**", view=self)
+        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT via Webhook!**", view=self)
         try:
             await self.ticket_channel.send("🎉 **Your account has been officially marked as SOLD! Thank you for selling with Pedrao22k Services.**")
         except:
