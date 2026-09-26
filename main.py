@@ -20,9 +20,10 @@ MARKETPLACE_CHANNEL_ID = 1552628139618734170     # روم المعروضات acc
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
-# إعدادات واجهة الويب عبر النفق العام
-WEB_PORT = 5000
-BASE_WEB_URL = "https://happier-unify-chess.ngrok-free.dev"
+# قراءة المنفذ والرابط تلقائياً من بيئة الاستضافة
+WEB_PORT = int(os.environ.get("PORT", 5000))
+# إذا وُجد رابط خارجي من Render يتم اعتماده، وإلا يستخدم الرابط الافتراضي
+BASE_WEB_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://happier-unify-chess.ngrok-free.dev")
 
 CRYPTO_ADDRESSES = {
     "USDT_TRC20": "TYourTRC20AddressHereXXXXXXXXXXXXXX",
@@ -79,7 +80,7 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # قفل الشات: حذف أي رسالة نصية يرسلها صاحب تذكرة البيع تلقائياً
+    # قفل الشات: مسح أي رسالة نصية من البائع داخل تذكرة البيع
     if message.channel.name.startswith("🏷️・sell-"):
         author_clean = message.author.name.lower().replace(" ", "-")
         if message.channel.name.endswith(author_clean) or not message.author.guild_permissions.administrator:
@@ -829,9 +830,10 @@ async def start_web_server():
     app.router.add_post("/api/submit_listing", handle_api_submit)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", WEB_PORT)
+    # ربط السيرفر على 0.0.0.0 والمنفذ المحدد تلقائياً للبيئة السحابية
+    site = web.TCPSite(runner, "0.0.0.0", WEB_PORT)
     await site.start()
-    print(f"🌐 All-in-One Seller Portal Engine online on port {WEB_PORT}!")
+    print(f"🌐 All-in-One Seller Portal Engine online on 0.0.0.0:{WEB_PORT}!")
 
 # ======================== نظام الفيدباك ========================
 class FeedbackModal(Modal, title="Rate Your Experience"):
@@ -889,7 +891,7 @@ async def on_ready():
     bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
     bot.loop.create_task(start_web_server())
     bot.loop.create_task(session_cleaner_task())
-    print(f"Logged in as {bot.user.name} | Public Ngrok Portal & Auto-Moderation Online!")
+    print(f"Logged in as {bot.user.name} | Cloud / Local Dynamic Port Engine Online!")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
