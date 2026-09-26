@@ -79,6 +79,7 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
+    # قفل الشات: مسح أي رسالة نصية يرسلها البائع في تذكرة البيع لمنع التخريب
     if message.channel.name.startswith("🏷️・sell-"):
         author_clean = message.author.name.lower().replace(" ", "-")
         if message.channel.name.endswith(author_clean) or not message.author.guild_permissions.administrator:
@@ -733,7 +734,6 @@ HTML_PAGE = """<!DOCTYPE html>
             transform: translateY(-2px);
         }
 
-        /* حالة النجاح للزر: خلفية خضراء مع أنيميشن متحرك */
         .btn.success-btn {
             background: linear-gradient(135deg, #10B981 0%, #059669 100%) !important;
             color: #FFFFFF !important;
@@ -943,7 +943,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     document.getElementById('dropText').innerText = `✅ Listing Dispatched to Staff`;
                     submitBtn.innerText = "✅ SUBMITTED SUCCESSFULLY";
                     submitBtn.classList.remove('ready');
-                    submitBtn.classList.add('success-btn'); // خلفية خضراء وتأثير النبض المتحرك
+                    submitBtn.classList.add('success-btn');
                 } else {
                     status.innerHTML = `<span class="error-msg">❌ Failed: ${json.error || "Unknown error"}</span>`;
                     submitBtn.disabled = false;
@@ -1090,6 +1090,8 @@ async def handle_finalize_listing(request):
         )
         try:
             await launcher_msg.edit(embed=submitted_embed, view=None)
+            # إرسال رسالة منشن إضافية للتأكيد على البائع بالانتظار
+            await ticket_channel.send(f"{seller.mention} **WAIT FOR THE ADMIN TO APPROVE YOUR OFFER!** ⏳")
         except Exception as e:
             print(f"Error updating launcher message: {e}")
 
