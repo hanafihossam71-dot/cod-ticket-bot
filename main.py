@@ -419,17 +419,14 @@ class AdminApprovalView(View):
 
         market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
         
-        # إرسال المعروض عبر الـ Webhook مباشرة بشكل احترافي وخرافي
         webhook_msg_url = "#"
         async with ClientSession() as session:
             webhook = discord.Webhook.from_url(MARKETPLACE_WEBHOOK_URL, session=session)
-            
-            # تجهيز الأزرار عبر الـ Webhook
             payload_message = await webhook.send(
                 embed=pro_market_embed,
                 view=market_view,
                 username="Pedrao22k Services",
-                avatar_url="https://cdn.discordapp.com/emojis/1100000000000000000.png" if interaction.guild.icon is None else interaction.guild.icon.url,
+                avatar_url=interaction.guild.icon.url if interaction.guild.icon else "https://cdn.discordapp.com/embed/avatars/0.png",
                 wait=True
             )
             webhook_msg_url = payload_message.jump_url
@@ -496,7 +493,7 @@ class AdminApprovalView(View):
                 )
 
         button.disabled = True
-        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT via Webhook!**", view=self)
+        await interaction.edit_original_response(content="🔒 **Account marked as SOLD OUT via Webhook!**", view=self)
         try:
             await self.ticket_channel.send("🎉 **Your account has been officially marked as SOLD! Thank you for selling with Pedrao22k Services.**")
         except:
@@ -562,7 +559,8 @@ class MarketplaceLauncherView(View):
             "seller_id": interaction.user.id,
             "channel_id": sell_ticket_channel.id,
             "launcher_msg": launcher_msg,
-            "created_at": datetime.datetime.utcnow()
+            "created_at": datetime.datetime.utcnow(),
+            "uploaded_files": []
         }
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -646,9 +644,10 @@ HTML_PAGE = """<!DOCTYPE html>
             <textarea id="desc" rows="4" placeholder="Detail your account: platform, rank, camos, access..." required></textarea>
 
             <label>Upload Screenshots (Click an image to set as Cover Thumbnail)</label>
-            <div class="dropzone" onclick="document.getElementById('fileInput').click()">
+            <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
                 <div style="font-size: 32px; color: #FFB800;">⚡</div>
-                <div style="font-weight: 700; color: #FFF;">Click or Drag & Drop Images Here</div>
+                <div id="dropText" style="font-weight: 700; color: #FFF;">Click or Drag & Drop Images Here</div>
+                <div id="dropSub" style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
             </div>
             <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFileSelection(this.files)">
 
@@ -656,7 +655,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             <div class="progress-box" id="progressBox">
                 <div class="progress-header">
-                    <span id="progressText">Uploading to Staff...</span>
+                    <span id="progressText">Uploading Screenshots...</span>
                     <span id="progressPercent" style="color: #FFB800;">0%</span>
                 </div>
                 <div class="progress-bar-bg">
@@ -665,7 +664,7 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
 
             <button id="submitBtn" class="btn" disabled onclick="submitFinalListing()">🚀 Submit Listing to Staff</button>
-            <div id="status" style="text-align: center; font-size: 13px; color: #94A3B8; margin-top: 12px;">Select images to begin.</div>
+            <div id="status" style="text-align: center; font-size: 13px; color: #94A3B8; margin-top: 12px;">Select screenshots to begin instant upload.</div>
         </div>
     </div>
 
@@ -674,23 +673,90 @@ HTML_PAGE = """<!DOCTYPE html>
         const session = urlParams.get('session');
         let selectedFiles = [];
         let primaryIndex = 0;
+        let isUploaded = false;
+        let uploadedCount = 0;
 
         function handleFileSelection(files) {
+            let validFiles = [];
             for (let i = 0; i < files.length; i++) {
                 if (files[i].type.startsWith('image/')) {
-                    selectedFiles.push(files[i]);
+                    validFiles.push(files[i]);
                 }
             }
-            renderPreviews();
+            if (validFiles.length === 0) return;
+            uploadImagesDirectly(validFiles);
         }
 
-        function renderPreviews() {
+        function uploadImagesDirectly(files) {
+            if (!session) {
+                alert("Session missing. Please reopen from Discord ticket.");
+                return;
+            }
+
+            const formData = new FormData();
+            formData.append("session", session);
+            for (let i = 0; i < files.length; i++) {
+                formData.append("files", files[i]);
+            }
+
+            const progressBox = document.getElementById('progressBox');
+            const progressBarFill = document.getElementById('progressBarFill');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressText = document.getElementById('progressText');
+            const submitBtn = document.getElementById('submitBtn');
+
+            progressBox.style.display = "block";
+            progressBarFill.style.width = "0%";
+            progressPercent.innerText = "0%";
+            progressText.innerText = `Uploading ${files.length} screenshots...`;
+
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", "/api/upload_images_only", true);
+
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    progressBarFill.style.width = percent + "%";
+                    progressPercent.innerText = percent + "%";
+                }
+            };
+
+            xhr.onload = function() {
+                try {
+                    const res = JSON.parse(xhr.responseText);
+                    if (xhr.status === 200 && res.status === "ok") {
+                        uploadedCount = res.total_uploaded;
+                        progressBarFill.style.width = "100%";
+                        progressPercent.innerText = "100%";
+                        progressText.innerText = "✅ Screenshots Ready!";
+                        
+                        document.getElementById('dropText').innerText = `✨ ${uploadedCount} Screenshots Ready`;
+                        document.getElementById('dropText').style.color = '#FFB800';
+                        document.getElementById('dropSub').innerText = "All photos loaded. Click an image below to set Cover.";
+
+                        isUploaded = true;
+                        submitBtn.disabled = false;
+                        renderPreviewsLocally(files);
+                    } else {
+                        alert(res.error || "Upload failed.");
+                    }
+                } catch (e) {
+                    alert("Server error.");
+                }
+            };
+            xhr.send(formData);
+        }
+
+        function renderPreviewsLocally(newFiles) {
+            for(let i=0; i<newFiles.length; i++) {
+                selectedFiles.push(newFiles[i]);
+            }
             const grid = document.getElementById('previewGrid');
             grid.innerHTML = '';
             selectedFiles.forEach((file, index) => {
                 const item = document.createElement('div');
                 item.className = 'preview-item ' + (index === primaryIndex ? 'selected' : '');
-                item.onclick = () => { primaryIndex = index; renderPreviews(); };
+                item.onclick = () => { primaryIndex = index; renderPreviewsLocally([]); };
                 
                 const img = document.createElement('img');
                 img.src = URL.createObjectURL(file);
@@ -703,12 +769,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 item.appendChild(badge);
                 grid.appendChild(item);
             });
-
-            const submitBtn = document.getElementById('submitBtn');
-            if (selectedFiles.length > 0) {
-                submitBtn.disabled = false;
-                document.getElementById('status').innerText = `${selectedFiles.length} images loaded. Click an image to set as Cover Thumbnail.`;
-            }
         }
 
         async function submitFinalListing() {
@@ -716,21 +776,10 @@ HTML_PAGE = """<!DOCTYPE html>
             const price = document.getElementById('price').value.trim();
             const desc = document.getElementById('desc').value.trim();
 
-            if (!offerTitle || !price || !desc || selectedFiles.length === 0) {
-                alert("Please fill in all fields and upload at least one image.");
+            if (!offerTitle || !price || !desc || !isUploaded) {
+                alert("Please fill in all fields and ensure images are uploaded.");
                 return;
             }
-
-            const formData = new FormData();
-            formData.append("session", session);
-            formData.append("offerTitle", offerTitle);
-            formData.append("price", price);
-            formData.append("description", desc);
-            formData.append("primaryIndex", primaryIndex);
-
-            selectedFiles.forEach((file) => {
-                formData.append("files", file);
-            });
 
             const submitBtn = document.getElementById('submitBtn');
             submitBtn.disabled = true;
@@ -742,53 +791,32 @@ HTML_PAGE = """<!DOCTYPE html>
             const progressText = document.getElementById('progressText');
             
             progressBox.style.display = "block";
-            progressBarFill.style.width = "0%";
-            progressPercent.innerText = "0%";
-            progressText.innerText = `Uploading ${selectedFiles.length} images to Discord...`;
+            progressBarFill.style.width = "100%";
+            progressPercent.innerText = "100%";
+            progressText.innerText = "⚡ Dispatched to Discord Staff...";
 
-            const xhr = new XMLHttpRequest();
-            xhr.open("POST", "/api/finalize_listing", true);
+            const formData = new FormData();
+            formData.append("session", session);
+            formData.append("offerTitle", offerTitle);
+            formData.append("price", price);
+            formData.append("description", desc);
+            formData.append("primaryIndex", primaryIndex);
 
-            xhr.upload.onprogress = function(e) {
-                if (e.lengthComputable) {
-                    const percent = Math.round((e.loaded / e.total) * 100);
-                    progressBarFill.style.width = percent + "%";
-                    progressPercent.innerText = percent + "%";
-                    if (percent >= 100) {
-                        progressText.innerText = "⚡ Processing & Dispatching to Staff...";
-                    }
-                }
-            };
-
-            xhr.onload = function() {
-                try {
-                    const json = JSON.parse(xhr.responseText);
-                    if (xhr.status === 200 && json.status === "ok") {
-                        progressBarFill.style.width = "100%";
-                        progressPercent.innerText = "100%";
-                        document.getElementById('formScreen').innerHTML = '<div style="text-align:center; padding: 40px;"><h2 style="color:#10B981">🎉 SUBMITTED SUCCESSFULLY!</h2><p style="color:#CBD5E1;">Your listing with all proofs has been sent to staff. You can close this window and return to Discord.</p></div>';
-                    } else {
-                        alert(json.error || "Submission failed.");
-                        submitBtn.disabled = false;
-                        submitBtn.innerText = "🚀 Submit Listing to Staff";
-                        progressBox.style.display = "none";
-                    }
-                } catch (e) {
-                    alert("Server response error.");
+            try {
+                const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
+                const json = await res.json();
+                if (json.status === "ok") {
+                    document.getElementById('formScreen').innerHTML = '<div style="text-align:center; padding: 40px;"><h2 style="color:#10B981">🎉 SUBMITTED SUCCESSFULLY!</h2><p style="color:#CBD5E1;">Your listing with all proofs has been sent to staff. You can close this window and return to Discord.</p></div>';
+                } else {
+                    alert(json.error || "Submission failed.");
                     submitBtn.disabled = false;
                     submitBtn.innerText = "🚀 Submit Listing to Staff";
-                    progressBox.style.display = "none";
                 }
-            };
-
-            xhr.onerror = function() {
-                alert("Network connection error.");
+            } catch (e) {
+                alert("Network error.");
                 submitBtn.disabled = false;
                 submitBtn.innerText = "🚀 Submit Listing to Staff";
-                progressBox.style.display = "none";
-            };
-
-            xhr.send(formData);
+            }
         }
     </script>
 </body>
@@ -801,14 +829,10 @@ async def ping_handler(request):
 async def handle_web_page(request):
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
-async def handle_finalize_listing(request):
+async def handle_upload_images_only(request):
     try:
         reader = await request.multipart()
         session_id = None
-        offer_title = "Verified COD Account"
-        price = ""
-        description = ""
-        primary_index = 0
         saved_paths = []
 
         while True:
@@ -817,15 +841,6 @@ async def handle_finalize_listing(request):
                 break
             if part.name == "session":
                 session_id = (await part.read()).decode('utf-8')
-            elif part.name == "offerTitle":
-                offer_title = (await part.read()).decode('utf-8')
-            elif part.name == "price":
-                price = (await part.read()).decode('utf-8')
-            elif part.name == "description":
-                description = (await part.read()).decode('utf-8')
-            elif part.name == "primaryIndex":
-                val = (await part.read()).decode('utf-8')
-                primary_index = int(val) if val.isdigit() else 0
             elif part.name == "files":
                 filename = part.filename
                 if filename:
@@ -843,11 +858,27 @@ async def handle_finalize_listing(request):
         if not session_id or session_id not in active_web_sessions:
             return web.json_response({"status": "error", "error": "Session expired."}, status=400)
 
-        if 0 <= primary_index < len(saved_paths):
-            cover_img = saved_paths.pop(primary_index)
-            saved_paths.insert(0, cover_img)
+        active_web_sessions[session_id]["uploaded_files"].extend(saved_paths)
+        total_files = len(active_web_sessions[session_id]["uploaded_files"])
+        return web.json_response({"status": "ok", "total_uploaded": total_files})
+    except Exception as e:
+        print(f"Upload error: {e}")
+        return web.json_response({"status": "error", "error": str(e)}, status=500)
+
+async def handle_finalize_listing(request):
+    try:
+        data = await request.post()
+        session_id = data.get("session")
+        offer_title = data.get("offerTitle", "Verified COD Account")
+        price = data.get("price", "")
+        description = data.get("description", "")
+        primary_index = int(data.get("primaryIndex", 0))
+
+        if not session_id or session_id not in active_web_sessions:
+            return web.json_response({"status": "error", "error": "Session expired."}, status=400)
 
         session_info = active_web_sessions[session_id]
+        saved_paths = session_info.get("uploaded_files", [])
         seller_id = session_info["seller_id"]
         channel_id = session_info["channel_id"]
         launcher_msg = session_info["launcher_msg"]
@@ -856,6 +887,10 @@ async def handle_finalize_listing(request):
         review_channel = bot.get_channel(REVIEW_CHANNEL_ID)
         support_role = ticket_channel.guild.get_role(SUPPORT_ROLE_ID) if ticket_channel else None
         seller = bot.get_user(seller_id) or await bot.fetch_user(seller_id)
+
+        if 0 <= primary_index < len(saved_paths):
+            cover_img = saved_paths.pop(primary_index)
+            saved_paths.insert(0, cover_img)
 
         clean_price_num = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
 
@@ -940,6 +975,7 @@ async def start_web_server():
     app = web.Application(client_max_size=300 * 1024 * 1024)
     app.router.add_get("/", ping_handler)
     app.router.add_get("/upload", handle_web_page)
+    app.router.add_post("/api/upload_images_only", handle_upload_images_only)
     app.router.add_post("/api/finalize_listing", handle_finalize_listing)
     runner = web.AppRunner(app)
     await runner.setup()
