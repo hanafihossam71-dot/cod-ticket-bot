@@ -16,11 +16,11 @@ SUPPORT_ROLE_ID = 1552628903481184336            # آيدي رتبة Admin
 TICKET_CATEGORY_ID = 1552642061608419408         # تصنيف تذاكر الطلبات العامة (Tickets ✅)
 SELL_CATEGORY_ID = 1552642160992591892           # تصنيف تذاكر بيع الحسابات
 TICKET_LOGS_CHANNEL_ID = 1552640603639259207       # روم حفظ سجلات التذاكر المحذوفة
-MARKETPLACE_CHANNEL_ID = 1552628139618734170     # روم المعروضات accounts-for-sale
+MARKETPLACE_CHANNEL_ID = 1553436681611386961     # روم الـ Forum الجديد للمعروضات
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
-# إعدادات واجهة الويب على Railway (مطابقة للمنفذ والرابط الخاص بك)
+# إعدادات واجهة الويب على Railway
 WEB_PORT = int(os.environ.get("PORT", 8080))
 BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
 
@@ -207,7 +207,6 @@ class TicketLauncherView(View):
         super().__init__(timeout=None)
         self.add_item(TicketSelect())
 
-# ======================== نافذة سبب الرفض ========================
 class RejectReasonModal(Modal, title="Listing Rejection Reason"):
     def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, price_str: str = "", count_str: str = ""):
         super().__init__()
@@ -267,7 +266,7 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
             dm_embed = discord.Embed(
                 title="❌ YOUR LISTING SUBMISSION WAS DECLINED",
                 description=(
-                    "Your Call of Duty listing submission has been declined by Pedrao22k staff.\n\n"
+                    "Your Call of Duty listing submission has been declined by Pedrao22k Staff.\n\n"
                     f"**Reason Provided:**\n> {reason}\n\n"
                     "Please re-check our guidelines and submit clear, unwatermarked proof."
                 ),
@@ -277,7 +276,6 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
         except:
             pass
 
-# ======================== معرض الماركت مع زر الشراء ========================
 class MarketplaceCarouselView(View):
     def __init__(self, images: list, embed_data: discord.Embed, is_sold: bool = False):
         super().__init__(timeout=None)
@@ -371,7 +369,6 @@ class MarketplaceCarouselView(View):
         await buy_ticket_channel.send(content=f"{interaction.user.mention} {role_ping}", embed=buy_embed, view=CloseTicketView())
         await interaction.response.send_message(f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}", ephemeral=True)
 
-# ======================== واجهة الإدارة ========================
 class AdminApprovalView(View):
     def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, price_str: str = "", count_str: str = ""):
         super().__init__(timeout=None)
@@ -384,6 +381,7 @@ class AdminApprovalView(View):
         self.count_str = count_str
         self.current_index = 0
         self.posted_market_message = None
+        self.created_thread = None
         self.update_carousel()
 
     def update_carousel(self):
@@ -416,24 +414,52 @@ class AdminApprovalView(View):
             self.update_carousel()
             await interaction.response.edit_message(embed=self.embed_data, view=self)
 
-    @discord.ui.button(label="Approve & Post to Market", style=discord.ButtonStyle.success, emoji="✅", row=1)
+    @discord.ui.button(label="Approve & Post to Forum", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def approve(self, interaction: discord.Interaction, button: Button):
+        await interaction.response.defer()
         market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
         
         self.embed_data.title = "🛒 VERIFIED ACCOUNT LISTING | CALL OF DUTY"
         self.embed_data.color = 0xF59E0B
         self.embed_data.set_footer(text="Pedrao22k. | Verified Listing • Click 'Buy This Account' below to purchase!")
 
-        if market_channel:
+        thread_title = f"{self.price_str} • Verified COD Account"
+        if len(thread_title) > 95:
+            thread_title = thread_title[:95]
+
+        available_tag = None
+        if hasattr(market_channel, 'available_tags'):
+            for tag in market_channel.available_tags:
+                if "avail" in tag.name.lower():
+                    available_tag = tag
+                    break
+
+        applied_tags = [available_tag] if available_tag else []
+
+        if market_channel and isinstance(market_channel, discord.ForumChannel):
+            if self.images:
+                self.embed_data.set_image(url=self.images[0])
+            market_view = MarketplaceCarouselView(images=self.images, embed_data=self.embed_data, is_sold=False)
+            
+            thread_with_message = await market_channel.create_thread(
+                name=thread_title,
+                embed=self.embed_data,
+                view=market_view,
+                applied_tags=applied_tags
+            )
+            self.posted_market_message = thread_with_message.message
+            self.created_thread = thread_with_message.thread
+        else:
             if self.images:
                 self.embed_data.set_image(url=self.images[0])
             market_view = MarketplaceCarouselView(images=self.images, embed_data=self.embed_data, is_sold=False)
             self.posted_market_message = await market_channel.send(embed=self.embed_data, view=market_view)
-        
+            self.created_thread = None
+
         button.disabled = True
         self.reject.disabled = True
         self.sold_btn.disabled = False
-        await interaction.response.edit_message(content="✅ **Listing Published to Marketplace! Click 'Mark as SOLD' below when completed.**", view=self)
+        await interaction.edit_original_response(content="✅ **Listing Published to Forum Marketplace! Click 'Mark as SOLD' below when completed.**", view=self)
         
         market_link = self.posted_market_message.jump_url if self.posted_market_message else "#accounts-for-sale"
 
@@ -451,7 +477,7 @@ class AdminApprovalView(View):
                         f"> 🔗 **Listing URL:** [Click to View on Market]({market_link})\n\n"
                         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         "### 🛡️ NEXT ESCROW STEPS:\n"
-                        "1️⃣ Your account is now visible to all buyers in <#1552628139618734170>.\n"
+                        "1️⃣ Your account is now visible to all buyers in <#1553436681611386961>.\n"
                         "2️⃣ When a buyer opens a purchase order, an admin will ping you right here.\n"
                         "3️⃣ Never transfer credentials outside of this ticket under any circumstances."
                     ),
@@ -509,6 +535,18 @@ class AdminApprovalView(View):
             sold_view = MarketplaceCarouselView(images=self.images, embed_data=sold_embed, is_sold=True)
             await self.posted_market_message.edit(embed=sold_embed, view=sold_view)
 
+        if hasattr(self, 'created_thread') and self.created_thread:
+            try:
+                sold_tag = None
+                for tag in self.created_thread.parent.available_tags:
+                    if "close" in tag.name.lower() or "sold" in tag.name.lower():
+                        sold_tag = tag
+                        break
+                if sold_tag:
+                    await self.created_thread.edit(applied_tags=[sold_tag], locked=True)
+            except Exception as e:
+                print(f"Error locking thread: {e}")
+
         button.disabled = True
         await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT in the marketplace! Buy button is now disabled.**", view=self)
         try:
@@ -516,14 +554,12 @@ class AdminApprovalView(View):
         except:
             pass
 
-# ======================== زر فتح الرابط في التذكرة ========================
 class DirectPortalLauncherView(View):
     def __init__(self, session_id: str):
         super().__init__(timeout=None)
         upload_url = f"{BASE_WEB_URL}/upload?session={session_id}"
         self.add_item(Button(label="Open Seller Portal (WARZONE / MW4)", style=discord.ButtonStyle.link, url=upload_url, emoji="⚡"))
 
-# زر فتح تذكرة البيع وقفل الشات فوراً
 class MarketplaceLauncherView(View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -543,7 +579,6 @@ class MarketplaceLauncherView(View):
         if existing:
             return await interaction.followup.send(f"⚠️ You already have an open seller ticket: {existing.mention}", ephemeral=True)
 
-        # قفل الكتابة وإرفاق الملفات على البائع فور إنشاء التذكرة
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=False, attach_files=False),
@@ -585,7 +620,6 @@ class MarketplaceLauncherView(View):
             "uploaded_files": []
         }
 
-# ======================== صفحة الويب ========================
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -893,7 +927,6 @@ HTML_PAGE = """<!DOCTYPE html>
             font-size: 13px;
         }
 
-        /* نافذة التنبيه المودرن في منتصف الشاشة بدون عناوين المتصفح */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -970,7 +1003,6 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container" id="mainContainer">
-        <!-- شاشة نموذج الإدخال -->
         <div id="formScreen">
             <div class="header-logo">
                 <span class="lightning">⚡</span>
@@ -1006,7 +1038,6 @@ HTML_PAGE = """<!DOCTYPE html>
             <div id="status">Select screenshots to begin instant upload.</div>
         </div>
 
-        <!-- شاشة النجاح والتأكيد -->
         <div class="success-screen" id="successScreen">
             <div class="success-icon">🎉</div>
             <div class="success-title">YOUR OFFER IS UNDER REVIEW!</div>
@@ -1019,7 +1050,6 @@ HTML_PAGE = """<!DOCTYPE html>
         </div>
     </div>
 
-    <!-- نافذة المودال الفاخرة المخصصة في منتصف الشاشة وبنفس الثيم بدون أي رابط متصفح -->
     <div class="modal-overlay" id="customModal">
         <div class="modal-card">
             <div class="modal-icon">⚠️</div>
@@ -1162,7 +1192,6 @@ HTML_PAGE = """<!DOCTYPE html>
             const price = priceInput.value.trim();
             const desc = descInput.value.trim();
 
-            // التحقق من الحقل وإظهار المودال بالطلب الحرفي للعميل في منتصف الشاشة
             if (!price || isNaN(price) || parseInt(price) <= 0) { 
                 showCenteredModal("Please fill in the account value field to proceed!");
                 return; 
@@ -1305,7 +1334,6 @@ async def handle_finalize_listing(request):
             except Exception as e:
                 print(f"Error removing temp image: {e}")
 
-        # بطاقة تأكيد أنيقة في تذكرة البائع أثناء انتظار الإدارة
         submitted_embed = discord.Embed(
             title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
             description=(
@@ -1318,7 +1346,7 @@ async def handle_finalize_listing(request):
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "### 📌 WHAT HAPPENS NEXT?\n"
                 "1️⃣ **Inspection:** Staff is inspecting all screenshots for compliance with safety rules.\n"
-                "2️⃣ **Marketplace Release:** Once approved, your listing will be published directly to <#1552628139618734170>.\n"
+                "2️⃣ **Marketplace Release:** Once approved, your listing will be published directly to <#1553436681611386961>.\n"
                 "3️⃣ **Direct Alert:** You will receive a direct notification the second a buyer opens an escrow deal.\n\n"
                 "⚠️ **IMPORTANT NOTICE:**\n"
                 "**PLEASE WAIT PATIENTLY FOR THE ADMIN TO APPROVE YOUR OFFER!**\n"
@@ -1396,7 +1424,6 @@ async def start_web_server():
     await site.start()
     print(f"🌐 All-in-One Seller Portal Engine online on 0.0.0.0:{WEB_PORT}!")
 
-# ======================== نظام الفيدباك ========================
 class FeedbackModal(Modal, title="Rate Your Experience"):
     def __init__(self):
         super().__init__()
