@@ -20,7 +20,7 @@ MARKETPLACE_CHANNEL_ID = 1552628139618734170     # روم المعروضات acc
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
-# إعدادات واجهة الويب على Railway (مطابقة للمنفذ والرابط الخاص بك)
+# إعدادات واجهة الويب على Railway
 WEB_PORT = int(os.environ.get("PORT", 8080))
 BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
 
@@ -58,7 +58,7 @@ def build_welcome_embed(member: discord.Member, guild: discord.Guild) -> discord
             "🛡️ **Accepted Payments:** `USDT (TRC20 / BEP20)` • `LTC` • `BTC`\n"
             "⚡ **Support:** Our verified team is available 24/7 to assist you."
         ),
-        color=0x2563EB,
+        color=0xF59E0B,
         timestamp=datetime.datetime.utcnow()
     )
     embed.set_thumbnail(url=member.display_avatar.url)
@@ -184,7 +184,7 @@ class TicketSelect(Select):
         ticket_channel = await guild.create_text_channel(name=channel_name, category=category, overwrites=overwrites)
 
         embed = discord.Embed(
-            title="🛡️ PEDRAO22K. | ORDER & SUPPORT",
+            title="⚡ PEDRAO22K. | ORDER & SUPPORT",
             description=(
                 f"Welcome {interaction.user.mention} to your private order channel!\n\n"
                 f"📌 **Department:** `{selected_service}`\n"
@@ -193,7 +193,7 @@ class TicketSelect(Select):
                 "• Please specify your order details (Current rank / Desired tier / Budget).\n"
                 "• Our support staff will respond shortly to assist you."
             ),
-            color=0x2563EB
+            color=0xF59E0B
         )
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         embed.set_footer(text="Pedrao22k. | Private & Secure Order System • Click 🔒 below to close")
@@ -328,7 +328,7 @@ class MarketplaceCarouselView(View):
                 "⚡ Type `!pay` to view our official payment addresses.\n"
                 "🛡️ An admin will join shortly to facilitate the safe escrow transfer."
             ),
-            color=0x10B981,
+            color=0xF59E0B,
             timestamp=datetime.datetime.utcnow()
         )
         if self.images:
@@ -386,7 +386,7 @@ class AdminApprovalView(View):
         market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
         
         self.embed_data.title = "🛒 VERIFIED ACCOUNT LISTING | CALL OF DUTY"
-        self.embed_data.color = 0x2563EB
+        self.embed_data.color = 0xF59E0B
         self.embed_data.set_footer(text="Pedrao22k. | Verified Listing • Click 'Buy This Account' below to purchase!")
 
         if market_channel:
@@ -450,7 +450,7 @@ class DirectPortalLauncherView(View):
     def __init__(self, session_id: str):
         super().__init__(timeout=None)
         upload_url = f"{BASE_WEB_URL}/upload?session={session_id}"
-        self.add_item(Button(label="Open Seller Portal (WARZONE / MW4)", style=discord.ButtonStyle.link, url=upload_url, emoji="🌐"))
+        self.add_item(Button(label="Open Seller Portal (WARZONE / MW4)", style=discord.ButtonStyle.link, url=upload_url, emoji="⚡"))
 
 # زر فتح تذكرة البيع وقفل الشات فوراً
 class MarketplaceLauncherView(View):
@@ -486,11 +486,11 @@ class MarketplaceLauncherView(View):
         session_id = str(uuid.uuid4())[:8]
 
         welcome_embed = discord.Embed(
-            title="🏷️ CALL OF DUTY | SELLER VERIFICATION PORTAL",
+            title="⚡ CALL OF DUTY | SELLER VERIFICATION PORTAL",
             description=(
                 f"Welcome {interaction.user.mention}!\n\n"
                 "### 🌐 ALL-IN-ONE SELLER DASHBOARD:\n"
-                "Click the blue button below to open our web interface:\n"
+                "Click the button below to open our web interface:\n"
                 "> 1️⃣ Fill in your **Asking Price** and **Description**.\n"
                 "> 2️⃣ Select or Drag & Drop **all your screenshots** (No limits!).\n"
                 "> 3️⃣ Click **Submit** — your listing will be dispatched directly to Staff!\n\n"
@@ -498,7 +498,7 @@ class MarketplaceLauncherView(View):
                 "🔒 **Chat is locked:** Submissions are processed exclusively through the web portal.\n"
                 "⛔ **STRICT RULE:** It is forbidden for images to contain nicknames or means of communication."
             ),
-            color=0x2563EB
+            color=0xF59E0B
         )
         role_ping = support_role.mention if support_role else ""
 
@@ -513,7 +513,7 @@ class MarketplaceLauncherView(View):
             "created_at": datetime.datetime.utcnow()
         }
 
-# ======================== صفحة الويب المدمجة الشاملة ========================
+# ======================== صفحة الويب بثيم الشعار الذهبي الكهربائي ========================
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -521,9 +521,18 @@ HTML_PAGE = """<!DOCTYPE html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Pedrao22k | Listing & Screenshots Portal</title>
     <style>
+        :root {
+            --gold-primary: #FFB800;
+            --gold-glow: #F59E0B;
+            --gold-hover: #D97706;
+            --bg-dark: #08080A;
+            --card-bg: #121318;
+            --border-color: #26241D;
+            --input-bg: #1A1A22;
+        }
         body {
-            background-color: #0b0f19;
-            color: #f8fafc;
+            background-color: var(--bg-dark);
+            color: #F8FAFC;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             display: flex;
             align-items: center;
@@ -531,62 +540,125 @@ HTML_PAGE = """<!DOCTYPE html>
             min-height: 100vh;
             margin: 0;
             padding: 20px;
+            background-image: radial-gradient(circle at 50% 20%, rgba(245, 158, 11, 0.08) 0%, transparent 60%);
         }
         .container {
-            background: #111827;
-            border: 1px solid #1f2937;
-            border-radius: 12px;
-            padding: 30px;
-            max-width: 600px;
+            background: var(--card-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 32px;
+            max-width: 580px;
             width: 100%;
             text-align: left;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.8), 0 0 25px rgba(245, 158, 11, 0.08);
+            position: relative;
         }
-        h2 { margin-top: 0; color: #3b82f6; text-align: center; }
-        .subtitle { color: #94a3b8; font-size: 14px; text-align: center; margin-bottom: 25px; }
-        label { display: block; font-weight: 600; font-size: 14px; margin-bottom: 6px; color: #cbd5e1; }
+        .container::before {
+            content: '';
+            position: absolute;
+            top: -1px;
+            left: 20%;
+            right: 20%;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--gold-primary), transparent);
+        }
+        h2 { 
+            margin-top: 0; 
+            color: var(--gold-primary); 
+            text-align: center; 
+            font-size: 24px;
+            letter-spacing: 0.5px;
+            text-shadow: 0 0 15px rgba(255, 184, 0, 0.4);
+        }
+        .subtitle { 
+            color: #94A3B8; 
+            font-size: 13px; 
+            text-align: center; 
+            margin-bottom: 24px; 
+        }
+        label { 
+            display: block; 
+            font-weight: 600; 
+            font-size: 13px; 
+            margin-bottom: 6px; 
+            color: #E2E8F0; 
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
         input[type="text"], textarea {
             width: 100%;
-            background: #1e293b;
-            border: 1px solid #374151;
-            border-radius: 6px;
-            padding: 10px 12px;
+            background: var(--input-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px 14px;
             color: white;
             font-size: 14px;
             box-sizing: border-box;
             margin-bottom: 18px;
             outline: none;
-            transition: border-color 0.2s;
+            transition: all 0.25s ease;
         }
-        input[type="text"]:focus, textarea:focus { border-color: #3b82f6; }
+        input[type="text"]:focus, textarea:focus { 
+            border-color: var(--gold-primary); 
+            box-shadow: 0 0 12px rgba(255, 184, 0, 0.25);
+        }
         .dropzone {
-            border: 2px dashed #374151;
-            border-radius: 10px;
-            padding: 30px 20px;
+            border: 2px dashed #3D3522;
+            border-radius: 12px;
+            padding: 28px 20px;
             cursor: pointer;
-            background: #1e293b;
-            transition: all 0.2s ease;
+            background: #15151C;
+            transition: all 0.25s ease;
             text-align: center;
-            margin-bottom: 20px;
+            margin-bottom: 22px;
         }
-        .dropzone.dragover { border-color: #3b82f6; background: #1e293b88; }
-        .cloud-icon { font-size: 40px; margin-bottom: 8px; }
+        .dropzone:hover, .dropzone.dragover { 
+            border-color: var(--gold-primary); 
+            background: rgba(245, 158, 11, 0.05); 
+            box-shadow: inset 0 0 15px rgba(255, 184, 0, 0.1);
+        }
+        .cloud-icon { 
+            font-size: 38px; 
+            margin-bottom: 6px; 
+            filter: drop-shadow(0 0 8px rgba(255, 184, 0, 0.5));
+        }
         .btn {
-            background: #2563eb;
-            color: white;
+            background: linear-gradient(135deg, #FFB800 0%, #D97706 100%);
+            color: #000;
             padding: 14px 28px;
             border: none;
-            border-radius: 6px;
+            border-radius: 8px;
             font-size: 16px;
-            font-weight: 600;
+            font-weight: 700;
             cursor: pointer;
-            transition: background 0.2s;
+            transition: all 0.25s ease;
             width: 100%;
+            box-shadow: 0 4px 15px rgba(245, 158, 11, 0.3);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
-        .btn:hover { background: #1d4ed8; }
-        .btn:disabled { background: #475569; cursor: not-allowed; }
-        #status { margin-top: 15px; font-size: 14px; text-align: center; color: #94a3b8; }
-        .success { color: #10b981 !important; font-weight: bold; }
+        .btn:hover { 
+            background: linear-gradient(135deg, #FFC72C 0%, #F59E0B 100%);
+            box-shadow: 0 6px 20px rgba(245, 158, 11, 0.5);
+            transform: translateY(-1px);
+        }
+        .btn:disabled { 
+            background: #33333D; 
+            color: #71717A;
+            cursor: not-allowed; 
+            box-shadow: none;
+            transform: none;
+        }
+        #status { 
+            margin-top: 15px; 
+            font-size: 13px; 
+            text-align: center; 
+            color: #94A3B8; 
+        }
+        .success { 
+            color: #10B981 !important; 
+            font-weight: bold; 
+        }
     </style>
 </head>
 <body>
@@ -602,9 +674,9 @@ HTML_PAGE = """<!DOCTYPE html>
 
         <label>Account Screenshots (Unlimited Proofs)</label>
         <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
-            <div class="cloud-icon">☁️</div>
-            <div id="dropText" style="font-weight: 600; font-size: 15px;">Click or Drag & Drop Images Here</div>
-            <div style="font-size: 12px; color: #64748b; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
+            <div class="cloud-icon">⚡</div>
+            <div id="dropText" style="font-weight: 600; font-size: 15px; color: #F1F5F9;">Click or Drag & Drop Images Here</div>
+            <div style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
         </div>
 
         <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFiles(this.files)">
@@ -652,6 +724,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             if (selectedFiles.length > 0) {
                 document.getElementById('dropText').innerText = `✨ ${selectedFiles.length} screenshots selected`;
+                document.getElementById('dropText').style.color = '#FFB800';
                 document.getElementById('status').innerText = `Ready with ${selectedFiles.length} photo(s). Click or drop more if needed!`;
             }
         }
@@ -916,7 +989,7 @@ async def pay(ctx):
             "• Once sent, upload the **Transaction ID / Screenshot** in this ticket.\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
-        color=0x2563EB
+        color=0xF59E0B
     )
     code_block = "```"
     embed.add_field(name="🟢 USDT (TRC-20) [Recommended]", value=f"{code_block}text\n{CRYPTO_ADDRESSES['USDT_TRC20']}\n{code_block}", inline=False)
@@ -973,7 +1046,7 @@ async def setup_ticket(ctx):
             "`USDT (TRC20 / BEP20)` • `Bitcoin (BTC)` • `Litecoin (LTC)`\n\n"
             "🔒 *Select a category from the dropdown menu below to begin your order:*"
         ),
-        color=0x2563EB
+        color=0xF59E0B
     )
     if ctx.guild.icon:
         embed.set_author(name="Pedrao22k Services", icon_url=ctx.guild.icon.url)
@@ -986,7 +1059,7 @@ async def setup_ticket(ctx):
 async def setup_market(ctx):
     await ctx.message.delete()
     embed = discord.Embed(
-        title="🏷️ PEDRAO22K. | SELLER SUBMISSION PORTAL",
+        title="⚡ PEDRAO22K. | SELLER SUBMISSION PORTAL",
         description=(
             "Want to list your personal Call of Duty / Warzone account for sale in our verified marketplace?\n\n"
             "### 📋 How it works:\n"
@@ -996,7 +1069,7 @@ async def setup_market(ctx):
             "4. Staff will review and verify before publishing to the marketplace.\n\n"
             "Click below to get started!"
         ),
-        color=0x94A3B8
+        color=0xF59E0B
     )
     if ctx.guild.icon:
         embed.set_author(name="Pedrao22k Marketplace", icon_url=ctx.guild.icon.url)
