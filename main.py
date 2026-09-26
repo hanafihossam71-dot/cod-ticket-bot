@@ -20,7 +20,7 @@ MARKETPLACE_CHANNEL_ID = 1552628139618734170     # روم المعروضات acc
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
-# إعدادات واجهة الويب على Railway
+# إعدادات واجهة الويب على Railway (مطابقة للمنفذ والرابط الخاص بك)
 WEB_PORT = int(os.environ.get("PORT", 8080))
 BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
 
@@ -526,13 +526,11 @@ HTML_PAGE = """<!DOCTYPE html>
             --gold-glow: #F59E0B;
             --gold-hover: #D97706;
             --bg-dark: #070709;
-            --card-bg: rgba(16, 17, 24, 0.85);
-            --border-color: rgba(245, 158, 11, 0.28);
-            --input-bg: rgba(22, 23, 31, 0.8);
+            --card-bg: rgba(16, 17, 24, 0.88);
+            --border-color: rgba(245, 158, 11, 0.35);
+            --input-bg: rgba(22, 23, 31, 0.85);
         }
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
         body {
             background-color: var(--bg-dark);
             color: #F8FAFC;
@@ -545,35 +543,30 @@ HTML_PAGE = """<!DOCTYPE html>
             padding: 24px 16px;
             position: relative;
             overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 50% 50%, rgba(245, 158, 11, 0.15) 0%, transparent 60%),
+                radial-gradient(circle at 20% 20%, rgba(255, 184, 0, 0.1) 0%, transparent 45%),
+                radial-gradient(circle at 80% 80%, rgba(217, 119, 6, 0.1) 0%, transparent 45%);
         }
+        /* توهج كهربائي عاكس لألوان الشعار في الخلفية */
         body::before {
             content: '';
             position: fixed;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            width: 700px;
-            height: 700px;
-            background: radial-gradient(circle, rgba(245, 158, 11, 0.15) 0%, rgba(217, 119, 6, 0.05) 50%, transparent 75%);
-            filter: blur(40px);
-            pointer-events: none;
-            z-index: 0;
-        }
-        body::after {
-            content: '';
-            position: fixed;
-            inset: 0;
-            background: 
-                radial-gradient(circle at 50% 10%, rgba(255, 184, 0, 0.12) 0%, transparent 50%),
-                radial-gradient(circle at 10% 90%, rgba(245, 158, 11, 0.08) 0%, transparent 40%),
-                radial-gradient(circle at 90% 90%, rgba(217, 119, 6, 0.08) 0%, transparent 40%);
+            width: 650px;
+            height: 650px;
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(255, 184, 0, 0.18) 0%, rgba(245, 158, 11, 0.08) 50%, transparent 75%);
+            filter: blur(55px);
             pointer-events: none;
             z-index: 0;
         }
         .container {
             background: var(--card-bg);
-            backdrop-filter: blur(18px);
-            -webkit-backdrop-filter: blur(18px);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
             border: 1px solid var(--border-color);
             border-radius: 20px;
             padding: 34px 28px;
@@ -581,9 +574,9 @@ HTML_PAGE = """<!DOCTYPE html>
             width: 100%;
             text-align: left;
             box-shadow: 
-                0 25px 50px rgba(0, 0, 0, 0.9),
-                0 0 35px rgba(245, 158, 11, 0.15),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+                0 25px 50px rgba(0, 0, 0, 0.95),
+                0 0 45px rgba(245, 158, 11, 0.2),
+                inset 0 1px 0 rgba(255, 255, 255, 0.1);
             position: relative;
             z-index: 1;
         }
@@ -591,11 +584,11 @@ HTML_PAGE = """<!DOCTYPE html>
             content: '';
             position: absolute;
             top: -1px;
-            left: 20%;
-            right: 20%;
+            left: 15%;
+            right: 15%;
             height: 2px;
             background: linear-gradient(90deg, transparent, #FFB800, #F59E0B, transparent);
-            box-shadow: 0 0 15px #FFB800;
+            box-shadow: 0 0 18px #FFB800;
         }
         .header-logo {
             display: flex;
@@ -604,27 +597,27 @@ HTML_PAGE = """<!DOCTYPE html>
             margin-bottom: 12px;
         }
         .header-logo .lightning {
-            font-size: 34px;
+            font-size: 38px;
             color: var(--gold-primary);
-            filter: drop-shadow(0 0 12px rgba(255, 184, 0, 0.8));
-            animation: pulse-glow 2.5s infinite alternate ease-in-out;
+            filter: drop-shadow(0 0 15px rgba(255, 184, 0, 0.9));
+            animation: pulse-glow 2s infinite alternate ease-in-out;
         }
         @keyframes pulse-glow {
-            0% { transform: scale(1); filter: drop-shadow(0 0 10px rgba(255, 184, 0, 0.6)); }
-            100% { transform: scale(1.1); filter: drop-shadow(0 0 24px rgba(255, 184, 0, 1)); }
+            0% { transform: scale(1); filter: drop-shadow(0 0 10px rgba(255, 184, 0, 0.7)); }
+            100% { transform: scale(1.12); filter: drop-shadow(0 0 25px rgba(255, 184, 0, 1)); }
         }
         h2 { 
             margin: 0; 
             color: #FFFFFF; 
             text-align: center; 
-            font-size: 23px;
+            font-size: 24px;
             font-weight: 800;
             letter-spacing: 0.6px;
-            text-shadow: 0 2px 10px rgba(0,0,0,0.6);
+            text-shadow: 0 2px 10px rgba(0,0,0,0.7);
         }
         h2 span {
             color: var(--gold-primary);
-            text-shadow: 0 0 20px rgba(255, 184, 0, 0.6);
+            text-shadow: 0 0 20px rgba(255, 184, 0, 0.7);
         }
         .subtitle { 
             color: #94A3B8; 
@@ -646,7 +639,7 @@ HTML_PAGE = """<!DOCTYPE html>
         input[type="text"], textarea {
             width: 100%;
             background: var(--input-bg);
-            border: 1px solid rgba(255, 255, 255, 0.08);
+            border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 10px;
             padding: 13px 15px;
             color: #FFFFFF;
@@ -658,29 +651,28 @@ HTML_PAGE = """<!DOCTYPE html>
         input[type="text"]:focus, textarea:focus { 
             border-color: var(--gold-primary); 
             background: rgba(26, 27, 36, 0.95);
-            box-shadow: 0 0 16px rgba(255, 184, 0, 0.3);
+            box-shadow: 0 0 16px rgba(255, 184, 0, 0.35);
         }
         .dropzone {
-            border: 2px dashed rgba(245, 158, 11, 0.35);
+            border: 2px dashed rgba(245, 158, 11, 0.45);
             border-radius: 14px;
             padding: 26px 18px;
             cursor: pointer;
-            background: rgba(18, 19, 26, 0.6);
+            background: rgba(18, 19, 26, 0.65);
             transition: all 0.25s ease;
             text-align: center;
             margin-bottom: 22px;
-            position: relative;
         }
         .dropzone:hover, .dropzone.dragover { 
             border-color: var(--gold-primary); 
-            background: rgba(245, 158, 11, 0.08); 
-            box-shadow: 0 0 25px rgba(255, 184, 0, 0.2), inset 0 0 15px rgba(255, 184, 0, 0.15);
+            background: rgba(245, 158, 11, 0.1); 
+            box-shadow: 0 0 25px rgba(255, 184, 0, 0.25), inset 0 0 15px rgba(255, 184, 0, 0.15);
         }
         .cloud-icon { 
-            font-size: 34px; 
+            font-size: 36px; 
             margin-bottom: 6px; 
             color: var(--gold-primary);
-            filter: drop-shadow(0 0 10px rgba(255, 184, 0, 0.7));
+            filter: drop-shadow(0 0 12px rgba(255, 184, 0, 0.8));
         }
         .btn {
             background: linear-gradient(135deg, #FFB800 0%, #D97706 100%);
@@ -693,7 +685,7 @@ HTML_PAGE = """<!DOCTYPE html>
             cursor: pointer;
             transition: all 0.25s ease;
             width: 100%;
-            box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4);
+            box-shadow: 0 4px 20px rgba(245, 158, 11, 0.45);
             text-transform: uppercase;
             letter-spacing: 0.8px;
             display: flex;
@@ -703,7 +695,7 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         .btn:hover { 
             background: linear-gradient(135deg, #FFC72C 0%, #F59E0B 100%);
-            box-shadow: 0 6px 25px rgba(255, 184, 0, 0.6);
+            box-shadow: 0 6px 28px rgba(255, 184, 0, 0.7);
             transform: translateY(-2px);
         }
         .btn:disabled { 
