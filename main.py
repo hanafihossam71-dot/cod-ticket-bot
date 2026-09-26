@@ -510,10 +510,11 @@ class MarketplaceLauncherView(View):
             "seller_id": interaction.user.id,
             "channel_id": sell_ticket_channel.id,
             "launcher_msg": launcher_msg,
-            "created_at": datetime.datetime.utcnow()
+            "created_at": datetime.datetime.utcnow(),
+            "uploaded_files": []
         }
 
-# ======================== صفحة الويب بثيم الشعار الذهبي الكهربائي ========================
+# ======================== صفحة الويب مع شريط التحميل والرفع السريع ========================
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -526,7 +527,7 @@ HTML_PAGE = """<!DOCTYPE html>
             --gold-glow: #F59E0B;
             --gold-hover: #D97706;
             --bg-dark: #070709;
-            --card-bg: rgba(16, 17, 24, 0.88);
+            --card-bg: rgba(16, 17, 24, 0.90);
             --border-color: rgba(245, 158, 11, 0.35);
             --input-bg: rgba(22, 23, 31, 0.85);
         }
@@ -548,7 +549,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 radial-gradient(circle at 20% 20%, rgba(255, 184, 0, 0.1) 0%, transparent 45%),
                 radial-gradient(circle at 80% 80%, rgba(217, 119, 6, 0.1) 0%, transparent 45%);
         }
-        /* توهج كهربائي عاكس لألوان الشعار في الخلفية */
         body::before {
             content: '';
             position: fixed;
@@ -661,7 +661,7 @@ HTML_PAGE = """<!DOCTYPE html>
             background: rgba(18, 19, 26, 0.65);
             transition: all 0.25s ease;
             text-align: center;
-            margin-bottom: 22px;
+            margin-bottom: 16px;
         }
         .dropzone:hover, .dropzone.dragover { 
             border-color: var(--gold-primary); 
@@ -674,18 +674,50 @@ HTML_PAGE = """<!DOCTYPE html>
             color: var(--gold-primary);
             filter: drop-shadow(0 0 12px rgba(255, 184, 0, 0.8));
         }
+
+        /* شريط التقدم الرمادي الذي يمتلئ بالبرتقالي/الذهبي */
+        .progress-box {
+            display: none;
+            margin-bottom: 20px;
+        }
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            font-weight: 700;
+            margin-bottom: 6px;
+            color: #CBD5E1;
+        }
+        .progress-bar-bg {
+            width: 100%;
+            height: 10px;
+            background: #232530;
+            border-radius: 6px;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.06);
+        }
+        .progress-bar-fill {
+            width: 0%;
+            height: 100%;
+            background: linear-gradient(90deg, #D97706, #FFB800);
+            border-radius: 6px;
+            transition: width 0.2s ease;
+            box-shadow: 0 0 12px rgba(255, 184, 0, 0.6);
+        }
+
+        /* حالة الزر (رمادي معطل أثناء الرفع، برتقالي مشرق عند الجاهزية) */
         .btn {
-            background: linear-gradient(135deg, #FFB800 0%, #D97706 100%);
-            color: #050507;
+            background: #252631;
+            color: #64748B;
             padding: 15px 28px;
             border: none;
             border-radius: 10px;
             font-size: 15px;
             font-weight: 800;
-            cursor: pointer;
-            transition: all 0.25s ease;
+            cursor: not-allowed;
+            transition: all 0.3s ease;
             width: 100%;
-            box-shadow: 0 4px 20px rgba(245, 158, 11, 0.45);
+            box-shadow: none;
             text-transform: uppercase;
             letter-spacing: 0.8px;
             display: flex;
@@ -693,17 +725,16 @@ HTML_PAGE = """<!DOCTYPE html>
             justify-content: center;
             gap: 8px;
         }
-        .btn:hover { 
-            background: linear-gradient(135deg, #FFC72C 0%, #F59E0B 100%);
-            box-shadow: 0 6px 28px rgba(255, 184, 0, 0.7);
-            transform: translateY(-2px);
+        .btn.ready {
+            background: linear-gradient(135deg, #FFB800 0%, #D97706 100%);
+            color: #050507;
+            cursor: pointer;
+            box-shadow: 0 4px 25px rgba(245, 158, 11, 0.45);
         }
-        .btn:disabled { 
-            background: #252631; 
-            color: #64748B;
-            cursor: not-allowed; 
-            box-shadow: none;
-            transform: none;
+        .btn.ready:hover { 
+            background: linear-gradient(135deg, #FFC72C 0%, #F59E0B 100%);
+            box-shadow: 0 6px 30px rgba(255, 184, 0, 0.7);
+            transform: translateY(-2px);
         }
         #status { 
             margin-top: 15px; 
@@ -735,30 +766,43 @@ HTML_PAGE = """<!DOCTYPE html>
         <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
             <div class="cloud-icon">⚡</div>
             <div id="dropText" style="font-weight: 700; font-size: 15px; color: #FFFFFF;">Click or Drag & Drop Images Here</div>
-            <div style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
+            <div id="dropSub" style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
         </div>
 
-        <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFiles(this.files)">
-        <button id="submitBtn" class="btn" onclick="submitFullListing()">🚀 Submit Listing to Staff</button>
-        <div id="status">Fill details and select screenshots to proceed.</div>
+        <!-- شريط التقدم الرمادي / البرتقالي -->
+        <div class="progress-box" id="progressBox">
+            <div class="progress-header">
+                <span id="progressText">Uploading Screenshots...</span>
+                <span id="progressPercent" style="color: #FFB800;">0%</span>
+            </div>
+            <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="progressBarFill"></div>
+            </div>
+        </div>
+
+        <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFileSelection(this.files)">
+        <button id="submitBtn" class="btn" disabled onclick="submitFinalListing()">🚀 Submit Listing to Staff</button>
+        <div id="status">Select screenshots to begin instant upload.</div>
     </div>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const session = urlParams.get('session');
-        let selectedFiles = [];
+        let isUploaded = false;
+        let uploadedCount = 0;
 
         const dropArea = document.getElementById('dropArea');
+        const progressBox = document.getElementById('progressBox');
+        const progressBarFill = document.getElementById('progressBarFill');
+        const progressText = document.getElementById('progressText');
+        const progressPercent = document.getElementById('progressPercent');
+        const submitBtn = document.getElementById('submitBtn');
+        const status = document.getElementById('status');
 
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, preventDefaults, false);
-            document.body.addEventListener(eventName, preventDefaults, false);
+            dropArea.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); }, false);
+            document.body.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); }, false);
         });
-
-        function preventDefaults(e) {
-            e.preventDefault();
-            e.stopPropagation();
-        }
 
         ['dragenter', 'dragover'].forEach(eventName => {
             dropArea.addEventListener(eventName, () => dropArea.classList.add('dragover'), false);
@@ -769,60 +813,125 @@ HTML_PAGE = """<!DOCTYPE html>
         });
 
         dropArea.addEventListener('drop', (e) => {
-            const dt = e.dataTransfer;
-            handleFiles(dt.files);
+            handleFileSelection(e.dataTransfer.files);
         }, false);
 
-        function handleFiles(files) {
+        function handleFileSelection(files) {
+            let validFiles = [];
             for (let i = 0; i < files.length; i++) {
                 if (files[i].type.startsWith('image/')) {
-                    selectedFiles.push(files[i]);
+                    validFiles.push(files[i]);
                 }
             }
-            document.getElementById('fileInput').value = '';
+            if (validFiles.length === 0) return;
 
-            if (selectedFiles.length > 0) {
-                document.getElementById('dropText').innerText = `✨ ${selectedFiles.length} screenshots selected`;
-                document.getElementById('dropText').style.color = '#FFB800';
-                document.getElementById('status').innerText = `Ready with ${selectedFiles.length} photo(s). Click or drop more if needed!`;
-            }
+            uploadImagesDirectly(validFiles);
         }
 
-        async function submitFullListing() {
+        // رفع الصور فورياً في الخلفية مع شريط التقدم الرمادي -> البرتقالي
+        function uploadImagesDirectly(files) {
+            if (!session) {
+                alert("Invalid session. Please reopen from Discord.");
+                return;
+            }
+
+            isUploaded = false;
+            submitBtn.disabled = true;
+            submitBtn.classList.remove('ready');
+            submitBtn.innerText = "⏳ Uploading Screenshots...";
+
+            progressBox.style.display = "block";
+            progressBarFill.style.width = "0%";
+            progressText.innerText = `Uploading ${files.length} screenshots...`;
+            progressPercent.innerText = "0%";
+            status.innerText = "Please wait while images are uploading...";
+
+            const formData = new FormData();
+            formData.append("session", session);
+            for (let i = 0; i < files.length; i++) {
+                formData.append("files", files[i]);
+            }
+
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", "/api/upload_images_only", true);
+
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    progressBarFill.style.width = percent + "%";
+                    progressPercent.innerText = percent + "%";
+                }
+            };
+
+            xhr.onload = function() {
+                if (xhr.status === 200) {
+                    const res = JSON.parse(xhr.responseText);
+                    if (res.status === "ok") {
+                        uploadedCount = res.total_uploaded;
+                        progressBarFill.style.width = "100%";
+                        progressPercent.innerText = "100%";
+                        progressText.innerText = "✅ All Screenshots Uploaded & Ready!";
+                        
+                        document.getElementById('dropText').innerText = `✨ ${uploadedCount} Screenshots Ready`;
+                        document.getElementById('dropText').style.color = '#FFB800';
+                        document.getElementById('dropSub').innerText = "All photos loaded. Fill details and click submit below.";
+
+                        // إتاحة الزر باللون البرتقالي فوراً
+                        isUploaded = true;
+                        submitBtn.disabled = false;
+                        submitBtn.classList.add('ready');
+                        submitBtn.innerText = "🚀 Submit Listing to Staff";
+                        status.innerHTML = `<span class="success">✨ ${uploadedCount} photo(s) ready! Click submit to send instantly.</span>`;
+                    } else {
+                        status.innerText = "❌ Upload error: " + (res.error || "Unknown");
+                    }
+                } else {
+                    status.innerText = "❌ Upload failed. Please re-select images.";
+                }
+            };
+
+            xhr.onerror = function() {
+                status.innerText = "❌ Connection failed during upload.";
+            };
+
+            xhr.send(formData);
+        }
+
+        // إرسال فوري مباشر بدون أي تأخير للأدمن
+        async function submitFinalListing() {
             const price = document.getElementById('price').value.trim();
             const desc = document.getElementById('desc').value.trim();
-            const btn = document.getElementById('submitBtn');
-            const status = document.getElementById('status');
 
             if (!price) { alert("Please specify an asking price."); return; }
             if (!desc) { alert("Please provide an account description."); return; }
-            if (selectedFiles.length === 0) { alert("Please attach at least one screenshot."); return; }
-            if (!session) { alert("Invalid session. Please reopen from Discord."); return; }
+            if (!isUploaded || uploadedCount === 0) { alert("Please wait for screenshots to finish uploading."); return; }
 
-            btn.disabled = true;
-            status.innerText = "⏳ Uploading screenshots and sending listing to Staff...";
+            submitBtn.disabled = true;
+            submitBtn.classList.remove('ready');
+            submitBtn.innerText = "⚡ Sending to Staff...";
+            status.innerText = "Dispatching directly to Admin Review...";
 
             const formData = new FormData();
             formData.append("session", session);
             formData.append("price", price);
             formData.append("description", desc);
-            selectedFiles.forEach((file) => {
-                formData.append("files", file);
-            });
 
             try {
-                const res = await fetch("/api/submit_listing", { method: "POST", body: formData });
+                const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
                 const json = await res.json();
                 if (json.status === "ok") {
-                    status.innerHTML = `<span class="success">🎉 All details and ${json.count} screenshots submitted! You can return to Discord now.</span>`;
+                    status.innerHTML = `<span class="success">🎉 Dispatched Directly to Admin Review! You can return to Discord.</span>`;
                     document.getElementById('dropText').innerText = `✅ Listing Dispatched to Staff`;
+                    submitBtn.innerText = "✅ Submitted Successfully";
                 } else {
-                    status.innerText = "❌ Submission failed: " + (json.error || "Unknown error");
-                    btn.disabled = false;
+                    status.innerText = "❌ Failed: " + (json.error || "Unknown error");
+                    submitBtn.disabled = false;
+                    submitBtn.classList.add('ready');
                 }
             } catch (e) {
                 status.innerText = "❌ Network error. Please try again.";
-                btn.disabled = false;
+                submitBtn.disabled = false;
+                submitBtn.classList.add('ready');
             }
         }
     </script>
@@ -836,11 +945,10 @@ async def ping_handler(request):
 async def handle_web_page(request):
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
-async def handle_api_submit(request):
+# مسار الرفع الفوري في الخلفية
+async def handle_upload_images_only(request):
     reader = await request.multipart()
     session_id = None
-    price = ""
-    description = ""
     saved_paths = []
 
     while True:
@@ -849,10 +957,6 @@ async def handle_api_submit(request):
             break
         if part.name == "session":
             session_id = (await part.read()).decode('utf-8')
-        elif part.name == "price":
-            price = (await part.read()).decode('utf-8')
-        elif part.name == "description":
-            description = (await part.read()).decode('utf-8')
         elif part.name == "files":
             filename = part.filename
             if filename:
@@ -870,7 +974,23 @@ async def handle_api_submit(request):
     if not session_id or session_id not in active_web_sessions:
         return web.json_response({"status": "error", "error": "Invalid or expired session"}, status=400)
 
+    # حفظ الصور مؤقتاً في الجلسة النشطة
+    active_web_sessions[session_id]["uploaded_files"].extend(saved_paths)
+    total_files = len(active_web_sessions[session_id]["uploaded_files"])
+    return web.json_response({"status": "ok", "total_uploaded": total_files})
+
+# مسار الإرسال الفوري للأدمن بدون أي Delay
+async def handle_finalize_listing(request):
+    data = await request.post()
+    session_id = data.get("session")
+    price = data.get("price", "")
+    description = data.get("description", "")
+
+    if not session_id or session_id not in active_web_sessions:
+        return web.json_response({"status": "error", "error": "Invalid or expired session"}, status=400)
+
     session_info = active_web_sessions[session_id]
+    saved_paths = session_info.get("uploaded_files", [])
     seller_id = session_info["seller_id"]
     channel_id = session_info["channel_id"]
     launcher_msg = session_info["launcher_msg"]
@@ -962,7 +1082,8 @@ async def start_web_server():
     app = web.Application(client_max_size=100 * 1024 * 1024)
     app.router.add_get("/", ping_handler)
     app.router.add_get("/upload", handle_web_page)
-    app.router.add_post("/api/submit_listing", handle_api_submit)
+    app.router.add_post("/api/upload_images_only", handle_upload_images_only)
+    app.router.add_post("/api/finalize_listing", handle_finalize_listing)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEB_PORT)
