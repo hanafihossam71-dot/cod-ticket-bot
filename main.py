@@ -13,9 +13,9 @@ TOKEN = "MTU1MjYzNzE5ODU2NDcyMDY0Mg.GvL5lw.gphQoQCUDDY70PZRCdkYe_M3YZVDCK-tHMUzg
 
 WELCOME_CHANNEL_ID = 1552627900191219752        # آيدي روم welcome
 SUPPORT_ROLE_ID = 1552628903481184336            # آيدي رتبة Admin
-TICKET_CATEGORY_ID = 1552642061608419408         # تصنيف تذاكر الطلبات العامة (Tickets ✅)
+TICKET_CATEGORY_ID = 1552642061608419408       # تصنيف تذاكر الطلبات العامة (Tickets ✅)
 SELL_CATEGORY_ID = 1552642160992591892           # تصنيف تذاكر بيع الحسابات
-TICKET_LOGS_CHANNEL_ID = 1552640603639259207       # روم حفظ سجلات التذاكر المحذوفة
+TICKET_LOGS_CHANNEL_ID = 1552640603639259207     # روم حفظ سجلات التذاكر المحذوفة
 MARKETPLACE_CHANNEL_ID = 1553436681611386961     # روم الـ Forum الجديد للمعروضات
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
@@ -79,7 +79,6 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # قفل الشات: مسح أي رسالة نصية يرسلها البائع في تذكرة البيع لمنع التخريب
     if message.channel.name.startswith("🏷️・sell-"):
         author_clean = message.author.name.lower().replace(" ", "-")
         if message.channel.name.endswith(author_clean) or not message.author.guild_permissions.administrator:
@@ -208,11 +207,12 @@ class TicketLauncherView(View):
         self.add_item(TicketSelect())
 
 class RejectReasonModal(Modal, title="Listing Rejection Reason"):
-    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, price_str: str = "", count_str: str = ""):
+    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = ""):
         super().__init__()
         self.seller = seller
         self.ticket_channel = ticket_channel
         self.launcher_msg = launcher_msg
+        self.offer_title = offer_title
         self.price_str = price_str
         self.count_str = count_str
         self.reason_input = TextInput(
@@ -236,6 +236,7 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
                         f"Hello {self.seller.mention}, your submitted Call of Duty account listing has been inspected and **declined** by moderation.\n\n"
                         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         "### 📋 SUBMISSION DETAILS:\n"
+                        f"> 🏷️ **Offer Title:** `{self.offer_title}`\n"
                         f"> 💰 **Asking Price:** `{self.price_str}`\n"
                         f"> 📸 **Screenshots:** `{self.count_str}`\n"
                         "> ❌ **Current Status:** `Rejected / Action Required`\n\n"
@@ -370,13 +371,14 @@ class MarketplaceCarouselView(View):
         await interaction.response.send_message(f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}", ephemeral=True)
 
 class AdminApprovalView(View):
-    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, price_str: str = "", count_str: str = ""):
+    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = ""):
         super().__init__(timeout=None)
         self.seller = seller
         self.embed_data = embed_data
         self.ticket_channel = ticket_channel
         self.images = images
         self.launcher_msg = launcher_msg
+        self.offer_title = offer_title
         self.price_str = price_str
         self.count_str = count_str
         self.current_index = 0
@@ -419,11 +421,11 @@ class AdminApprovalView(View):
         await interaction.response.defer()
         market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
         
-        self.embed_data.title = "🛒 VERIFIED ACCOUNT LISTING | CALL OF DUTY"
+        self.embed_data.title = f"🛒 {self.offer_title}"
         self.embed_data.color = 0xF59E0B
         self.embed_data.set_footer(text="Pedrao22k. | Verified Listing • Click 'Buy This Account' below to purchase!")
 
-        thread_title = f"{self.price_str} • Verified COD Account"
+        thread_title = f"{self.price_str} • {self.offer_title}"
         if len(thread_title) > 95:
             thread_title = thread_title[:95]
 
@@ -471,6 +473,7 @@ class AdminApprovalView(View):
                         f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** to our marketplace.\n\n"
                         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         "### 📋 LISTING DETAILS:\n"
+                        f"> 🏷️ **Offer Title:** `{self.offer_title}`\n"
                         f"> 💰 **Asking Price:** `{self.price_str}`\n"
                         f"> 📸 **Screenshots:** `{self.count_str}`\n"
                         "> ✅ **Current Status:** `Live in Marketplace`\n"
@@ -516,6 +519,7 @@ class AdminApprovalView(View):
             seller=self.seller,
             ticket_channel=self.ticket_channel,
             launcher_msg=self.launcher_msg,
+            offer_title=self.offer_title,
             price_str=self.price_str,
             count_str=self.count_str
         )
@@ -528,7 +532,7 @@ class AdminApprovalView(View):
     async def sold_btn(self, interaction: discord.Interaction, button: Button):
         if self.posted_market_message:
             sold_embed = self.posted_market_message.embeds[0]
-            sold_embed.title = "🔴 [SOLD OUT] ACCOUNT SOLD | CALL OF DUTY"
+            sold_embed.title = f"🔴 [SOLD OUT] {self.offer_title}"
             sold_embed.color = 0x475569
             sold_embed.set_footer(text="Pedrao22k. | 🔒 This account has been successfully sold.")
 
@@ -597,7 +601,7 @@ class MarketplaceLauncherView(View):
                 f"Welcome {interaction.user.mention}!\n\n"
                 "### 🌐 ALL-IN-ONE SELLER DASHBOARD:\n"
                 "Click the button below to open our web interface:\n"
-                "> 1️⃣ Fill in your **Asking Price** and **Description**.\n"
+                "> 1️⃣ Fill in your **Offer Title**, **Asking Price**, and **Description**.\n"
                 "> 2️⃣ Select or Drag & Drop **all your screenshots** (No limits!).\n"
                 "> 3️⃣ Click **Submit** — your listing will be dispatched directly to Staff!\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -1010,6 +1014,9 @@ HTML_PAGE = """<!DOCTYPE html>
             <h2>PEDRAO22K <span>SELLER PORTAL</span></h2>
             <div class="subtitle">Submit your account listing & upload unlimited proof screenshots in one click.</div>
 
+            <label for="offerTitle">Offer Title (e.g., Wz Top 250 Season 5 + Rare Black Cells)</label>
+            <input type="text" id="offerTitle" placeholder="Enter a catchy title for your account..." required>
+
             <label for="price">Asking Price ($ USD)</label>
             <input type="text" id="price" inputmode="numeric" placeholder="e.g. 150 (Numbers only)" oninput="filterNumbersOnly(this)" required>
 
@@ -1053,7 +1060,7 @@ HTML_PAGE = """<!DOCTYPE html>
     <div class="modal-overlay" id="customModal">
         <div class="modal-card">
             <div class="modal-icon">⚠️</div>
-            <div class="modal-text" id="modalMessage">Please fill in the account value field to proceed!</div>
+            <div class="modal-text" id="modalMessage">Please fill in all required fields to proceed!</div>
             <button class="modal-btn" onclick="closeCustomModal()">OK</button>
         </div>
     </div>
@@ -1071,6 +1078,7 @@ HTML_PAGE = """<!DOCTYPE html>
         const progressPercent = document.getElementById('progressPercent');
         const submitBtn = document.getElementById('submitBtn');
         const status = document.getElementById('status');
+        const offerTitleInput = document.getElementById('offerTitle');
         const priceInput = document.getElementById('price');
         const descInput = document.getElementById('desc');
         const customModal = document.getElementById('customModal');
@@ -1087,7 +1095,6 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function closeCustomModal() {
             customModal.style.display = 'none';
-            priceInput.focus();
         }
 
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -1189,9 +1196,14 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         async function submitFinalListing() {
+            const offerTitle = offerTitleInput.value.trim();
             const price = priceInput.value.trim();
             const desc = descInput.value.trim();
 
+            if (!offerTitle) {
+                showCenteredModal("Please fill in the Offer Title field!");
+                return;
+            }
             if (!price || isNaN(price) || parseInt(price) <= 0) { 
                 showCenteredModal("Please fill in the account value field to proceed!");
                 return; 
@@ -1218,6 +1230,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             const formData = new FormData();
             formData.append("session", session);
+            formData.append("offerTitle", offerTitle);
             formData.append("price", price);
             formData.append("description", desc);
 
@@ -1296,6 +1309,7 @@ async def handle_finalize_listing(request):
     try:
         data = await request.post()
         session_id = data.get("session")
+        offer_title = data.get("offerTitle", "Verified Call of Duty Account")
         price = data.get("price", "")
         description = data.get("description", "")
 
@@ -1340,6 +1354,7 @@ async def handle_finalize_listing(request):
                 f"Thank you {seller.mention}! Your Call of Duty account listing has been securely recorded and dispatched to our moderation queue.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "### 📋 SUBMISSION OVERVIEW:\n"
+                f"> 🏷️ **Offer Title:** `{offer_title}`\n"
                 f"> 💰 **Asking Price:** `{formatted_price}`\n"
                 f"> 📸 **Screenshots Verified:** `{len(discord_cdn_urls)} proofs uploaded`\n"
                 "> ⏳ **Current Status:** `Pending Admin Verification`\n\n"
@@ -1366,7 +1381,7 @@ async def handle_finalize_listing(request):
             print(f"Error updating launcher message: {e}")
 
         admin_embed = discord.Embed(
-            title="📥 NEW VERIFIED COD ACCOUNT SUBMISSION",
+            title=f"📥 {offer_title}",
             description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
             color=0xF59E0B,
             timestamp=datetime.datetime.utcnow()
@@ -1389,6 +1404,7 @@ async def handle_finalize_listing(request):
                 ticket_channel=ticket_channel,
                 images=discord_cdn_urls,
                 launcher_msg=launcher_msg,
+                offer_title=offer_title,
                 price_str=formatted_price,
                 count_str=f"{len(discord_cdn_urls)} proofs"
             )
