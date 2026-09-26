@@ -6,7 +6,7 @@ import io
 import datetime
 import os
 import uuid
-from aiohttp import web, ClientSession
+from aiohttp import web
 
 # ======================== بيانات السيرفر والتصنيفات ========================
 TOKEN = "MTU1MjYzNzE5ODU2NDcyMDY0Mg.GvL5lw.gphQoQCUDDY70PZRCdkYe_M3YZVDCK-tHMUzgc"
@@ -19,8 +19,8 @@ TICKET_LOGS_CHANNEL_ID = 1552640603639259207     # روم حفظ سجلات ال
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
-# رابط الـ Webhook الخاص بالمتجر
-MARKETPLACE_WEBHOOK_URL = "https://discord.com/api/webhooks/1553522939477893213/kruGOJaG4CD1W-atei0tq6ymLyd1VrFHCc0HsE26l9i74Ael-scnnnKZpTcKPIjfR-hw"
+# آيدي الروم النصي المخصص لعروض الحسابات (النشر عبر البوت مباشرة لدعم الأزرار)
+MARKETPLACE_CHANNEL_ID = 1553436681611386961     
 
 WEB_PORT = int(os.environ.get("PORT", 8080))
 BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
@@ -404,6 +404,10 @@ class AdminApprovalView(View):
         await interaction.response.defer(ephemeral=True)
         
         try:
+            market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
+            if not market_channel:
+                return await interaction.followup.send("❌ روم المعروضات (MARKETPLACE_CHANNEL_ID) غير موجود!", ephemeral=True)
+
             pro_market_embed = discord.Embed(
                 title=f"⚡ {self.offer_title.upper()}",
                 description="```yaml\nSTATUS: VERIFIED & AVAILABLE FOR PURCHASE\nESCROW: 100% SECURE VIA ADMIN TRANSFER```",
@@ -420,32 +424,24 @@ class AdminApprovalView(View):
 
             market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
             
-            webhook_msg_url = "#"
-            async with ClientSession() as session:
-                webhook = discord.Webhook.from_url(MARKETPLACE_WEBHOOK_URL, session=session)
-                payload_message = await webhook.send(
-                    embed=pro_market_embed,
-                    view=market_view,
-                    username="Pedrao22k Services",
-                    avatar_url=interaction.guild.icon.url if interaction.guild.icon else "https://cdn.discordapp.com/embed/avatars/0.png",
-                    wait=True
-                )
-                webhook_msg_url = payload_message.jump_url
-                self.posted_market_message = payload_message
+            # إرسال الرسالة عبر البوت مباشرة في الروم النصي لدعم الأزرار تماماً
+            payload_message = await market_channel.send(embed=pro_market_embed, view=market_view)
+            self.posted_market_message = payload_message
+            webhook_msg_url = payload_message.jump_url
 
             button.disabled = True
             self.reject.disabled = True
             self.sold_btn.disabled = False
             
-            await interaction.message.edit(content="✅ **Listing Published via Webhook with Pro Layout!**", view=self)
-            await interaction.followup.send("✅ تم نشر العرض بنجاح عبر الـ Webhook إلى الروم المخصص!", ephemeral=True)
+            await interaction.message.edit(content="✅ **Listing Published via Bot with Pro Layout!**", view=self)
+            await interaction.followup.send("✅ تم نشر العرض بنجاح في روم المتجر!", ephemeral=True)
 
             if self.launcher_msg:
                 try:
                     approved_embed = discord.Embed(
                         title="🎉 LISTING APPROVED & PUBLISHED ON MARKETPLACE",
                         description=(
-                            f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** via Webhook.\n\n"
+                            f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published**.\n\n"
                             f"🔗 **Listing URL:** [Click to View on Market]({webhook_msg_url})\n"
                         ),
                         color=0x10B981,
@@ -491,16 +487,10 @@ class AdminApprovalView(View):
             sold_embed.set_footer(text="Pedrao22k. | 🔒 This account has been successfully sold.")
 
             sold_view = MarketplaceCarouselView(images=self.images, embed_data=sold_embed, is_sold=True)
-            async with ClientSession() as session:
-                webhook = discord.Webhook.from_url(MARKETPLACE_WEBHOOK_URL, session=session)
-                await webhook.edit_message(
-                    self.posted_market_message.id,
-                    embed=sold_embed,
-                    view=sold_view
-                )
+            await self.posted_market_message.edit(embed=sold_embed, view=sold_view)
 
         button.disabled = True
-        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT via Webhook!**", view=self)
+        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT!**", view=self)
         try:
             await self.ticket_channel.send("🎉 **Your account has been officially marked as SOLD! Thank you for selling with Pedrao22k Services.**")
         except:
@@ -653,7 +643,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <label>Upload Screenshots (Click an image to set as Cover Thumbnail)</label>
             <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
                 <div style="font-size: 32px; color: #FFB800;">⚡</div>
-                <div id="dropText" style="font-weight: 700; font-size: 1ffe;">Click or Drag & Drop Images Here</div>
+                <div id="dropText" style="font-weight: 700; color: #FFF;">Click or Drag & Drop Images Here</div>
                 <div id="dropSub" style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
             </div>
             <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFileSelection(this.files)">
@@ -1057,7 +1047,7 @@ async def pay(ctx):
     embed.add_field(name="🟢 USDT (TRC-20) [Recommended]", value=f"{code_block}text\n{CRYPTO_ADDRESSES['USDT_TRC20']}\n{code_block}", inline=False)
     embed.add_field(name="🟡 USDT (BEP-20 / BSC)", value=f"{code_block}text\n{CRYPTO_ADDRESSES['USDT_BEP20']}\n{code_block}", inline=False)
     embed.add_field(name="⚪ Litecoin (LTC) [Low Fee]", value=f"{code_block}text\n{CRYPTO_ADDRESSES['LTC']}\n{code_block}", inline=False)
-    embed.add_field(name="🟠 Bitcoin (BTC)", value=f"{code_block}text\n{CRYPTO_ADDRESSES['BTC']}\n{code_block}", inline=False)
+    embed.add_field(name="🟠 Bitcoin (BTC)", value=f"{code_block}text\n{CRYPTO_ADDRESS_['BTC'] if 'BTC' in CRYPTO_ADDRESSES else CRYPTO_ADDRESSES['BTC']}\n{code_block}", inline=False)
     embed.set_footer(text="Pedrao22k. | Always double check the address before transferring")
     await ctx.send(embed=embed)
 
@@ -1118,7 +1108,7 @@ async def setup_market(ctx):
         title="⚡ PEDRAO22K. | SELLER SUBMISSION PORTAL",
         description=(
             "Want to list your personal Call of Duty / Warzone account for sale in our verified marketplace?\n\n"
-            "### 📋 How it works:\n"
+            "### 📋 How line works:\n"
             "1. Click the button below to open your private seller channel.\n"
             "2. Fill in your offer title, description & price in a single window.\n"
             "3. Upload screenshots and click on your preferred image to set it as Cover Thumbnail.\n"
