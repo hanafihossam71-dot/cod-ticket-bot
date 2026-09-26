@@ -543,6 +543,7 @@ class MarketplaceLauncherView(View):
         if existing:
             return await interaction.followup.send(f"⚠️ You already have an open seller ticket: {existing.mention}", ephemeral=True)
 
+        # قفل الكتابة وإرفاق الملفات على البائع فور إنشاء التذكرة
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=False, attach_files=False),
@@ -724,6 +725,7 @@ HTML_PAGE = """<!DOCTYPE html>
             background: rgba(26, 27, 36, 0.95);
             box-shadow: 0 0 16px rgba(255, 184, 0, 0.35);
         }
+
         .dropzone {
             border: 2px dashed rgba(245, 158, 11, 0.45);
             border-radius: 14px;
@@ -890,9 +892,79 @@ HTML_PAGE = """<!DOCTYPE html>
             font-weight: 700;
             font-size: 13px;
         }
-        .error-msg {
-            color: #EF4444 !important;
-            font-weight: bold;
+
+        /* نافذة التنبيه المودرن في منتصف الشاشة بدون عناوين المتصفح */
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(5, 5, 7, 0.85);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+            padding: 16px;
+        }
+        .modal-card {
+            background: rgba(18, 19, 27, 0.98);
+            border: 1px solid var(--border-color);
+            border-radius: 18px;
+            padding: 28px 24px;
+            max-width: 420px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 20px 45px rgba(0, 0, 0, 0.9), 0 0 35px rgba(245, 158, 11, 0.3);
+            animation: modalPop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            position: relative;
+        }
+        .modal-card::before {
+            content: '';
+            position: absolute;
+            top: -1px;
+            left: 20%;
+            right: 20%;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, #FFB800, #F59E0B, transparent);
+        }
+        @keyframes modalPop {
+            from { transform: scale(0.85); opacity: 0; }
+            to { transform: scale(1); opacity: 1; }
+        }
+        .modal-icon {
+            font-size: 38px;
+            margin-bottom: 12px;
+            color: #FFB800;
+            filter: drop-shadow(0 0 10px rgba(255, 184, 0, 0.8));
+        }
+        .modal-text {
+            color: #F8FAFC;
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 1.5;
+            margin-bottom: 22px;
+        }
+        .modal-btn {
+            background: linear-gradient(135deg, #FFB800 0%, #D97706 100%);
+            color: #070709;
+            font-weight: 800;
+            border: none;
+            padding: 12px 28px;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4);
+            width: 100%;
+        }
+        .modal-btn:hover {
+            box-shadow: 0 6px 22px rgba(255, 184, 0, 0.65);
+            transform: translateY(-1px);
         }
     </style>
 </head>
@@ -934,7 +1006,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <div id="status">Select screenshots to begin instant upload.</div>
         </div>
 
-        <!-- شاشة النجاح والتأكيد المحدثة بالنص المطلوب حرفياً -->
+        <!-- شاشة النجاح والتأكيد -->
         <div class="success-screen" id="successScreen">
             <div class="success-icon">🎉</div>
             <div class="success-title">YOUR OFFER IS UNDER REVIEW!</div>
@@ -944,6 +1016,15 @@ HTML_PAGE = """<!DOCTYPE html>
                 No further action is required from you here. We will notify you inside your Discord ticket once reviewed!
             </div>
             <a href="https://discord.com/channels/@me" class="discord-btn" onclick="window.close()">Return to Discord</a>
+        </div>
+    </div>
+
+    <!-- نافذة المودال الفاخرة المخصصة في منتصف الشاشة وبنفس الثيم بدون أي رابط متصفح -->
+    <div class="modal-overlay" id="customModal">
+        <div class="modal-card">
+            <div class="modal-icon">⚠️</div>
+            <div class="modal-text" id="modalMessage">Please fill in the account value field to proceed!</div>
+            <button class="modal-btn" onclick="closeCustomModal()">OK</button>
         </div>
     </div>
 
@@ -960,9 +1041,23 @@ HTML_PAGE = """<!DOCTYPE html>
         const progressPercent = document.getElementById('progressPercent');
         const submitBtn = document.getElementById('submitBtn');
         const status = document.getElementById('status');
+        const priceInput = document.getElementById('price');
+        const descInput = document.getElementById('desc');
+        const customModal = document.getElementById('customModal');
+        const modalMessage = document.getElementById('modalMessage');
 
         function filterNumbersOnly(input) {
             input.value = input.value.replace(/[^0-9]/g, '');
+        }
+
+        function showCenteredModal(message) {
+            modalMessage.innerText = message;
+            customModal.style.display = 'flex';
+        }
+
+        function closeCustomModal() {
+            customModal.style.display = 'none';
+            priceInput.focus();
         }
 
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
@@ -996,7 +1091,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function uploadImagesDirectly(files) {
             if (!session) {
-                alert("Invalid or missing session. Please open the link again from Discord.");
+                showCenteredModal("Session missing. Please reopen from Discord ticket.");
                 return;
             }
 
@@ -1048,32 +1143,38 @@ HTML_PAGE = """<!DOCTYPE html>
                         submitBtn.innerText = "🚀 Submit Listing to Staff";
                         status.innerHTML = `<span class="notice-wait">✨ ${uploadedCount} photo(s) ready! Click submit to dispatch.</span>`;
                     } else {
-                        status.innerHTML = `<span class="error-msg">❌ Error: ${res.error || "Session expired. Please reopen from Discord."}</span>`;
+                        showCenteredModal(res.error || "Upload failed. Please reopen from Discord.");
                         submitBtn.innerText = "❌ Upload Failed";
                     }
                 } catch (e) {
-                    status.innerHTML = `<span class="error-msg">❌ Server response error. Please reopen link from Discord ticket.</span>`;
+                    showCenteredModal("Server connection error. Please try again.");
                 }
             };
 
             xhr.onerror = function() {
-                status.innerHTML = `<span class="error-msg">❌ Network connection error. Please try again.</span>`;
+                showCenteredModal("Network connection error. Please try again.");
             };
 
             xhr.send(formData);
         }
 
         async function submitFinalListing() {
-            const price = document.getElementById('price').value.trim();
-            const desc = document.getElementById('desc').value.trim();
+            const price = priceInput.value.trim();
+            const desc = descInput.value.trim();
 
+            // التحقق من الحقل وإظهار المودال بالطلب الحرفي للعميل في منتصف الشاشة
             if (!price || isNaN(price) || parseInt(price) <= 0) { 
-                alert("Please enter a valid numeric asking price (numbers only)."); 
-                document.getElementById('price').focus();
+                showCenteredModal("Please fill in the account value field to proceed!");
                 return; 
             }
-            if (!desc) { alert("Please provide an account description."); return; }
-            if (!isUploaded || uploadedCount === 0) { alert("Please wait for screenshots to finish uploading."); return; }
+            if (!desc) { 
+                showCenteredModal("Please fill in the account description field to proceed!"); 
+                return; 
+            }
+            if (!isUploaded || uploadedCount === 0) { 
+                showCenteredModal("Please upload proof screenshots to proceed!"); 
+                return; 
+            }
 
             submitBtn.disabled = true;
             submitBtn.classList.remove('ready');
@@ -1099,14 +1200,14 @@ HTML_PAGE = """<!DOCTYPE html>
                     document.getElementById('successScreen').style.display = 'block';
                 } else {
                     progressBarFill.classList.remove('reloading');
-                    status.innerHTML = `<span class="error-msg">❌ Failed: ${json.error || "Unknown error"}</span>`;
+                    showCenteredModal(json.error || "Failed to finalize listing.");
                     submitBtn.disabled = false;
                     submitBtn.classList.add('ready');
                     submitBtn.innerText = "🚀 Submit Listing to Staff";
                 }
             } catch (e) {
                 progressBarFill.classList.remove('reloading');
-                status.innerHTML = `<span class="error-msg">❌ Network error. Please try again.</span>`;
+                showCenteredModal("Network error while submitting to staff.");
                 submitBtn.disabled = false;
                 submitBtn.classList.add('ready');
                 submitBtn.innerText = "🚀 Submit Listing to Staff";
