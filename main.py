@@ -221,7 +221,7 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
 
     async def on_submit(self, interaction: discord.Interaction):
         reason = self.reason_input.value.strip()
-        await interaction.response.send_message(f"✅ Rejection sent to seller: `{reason}`", ephemeral=True)
+        await interaction.response.send_message(f"✅ Rejection reason sent to seller: `{reason}`", ephemeral=True)
 
         if self.launcher_msg:
             try:
@@ -405,13 +405,12 @@ class AdminApprovalView(View):
         try:
             market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
             if not market_channel:
-                return await interaction.followup.send("❌ روم المنتدى (MARKETPLACE_CHANNEL_ID) غير موجود!", ephemeral=True)
+                return await interaction.followup.send("❌ Marketplace forum channel not found!", ephemeral=True)
 
             thread_title = f"⚡ [${self.price_num} USD] • {self.offer_title}"
             if len(thread_title) > 95:
                 thread_title = thread_title[:95]
 
-            # تصميم فخم واحترافي للغاية مطابق لمتاجر الكبار مع ألوان متناسقة وفواصل أنيقة
             pro_market_embed = discord.Embed(
                 title=f"👑 ┃ {self.offer_title.upper()}",
                 description=(
@@ -422,7 +421,7 @@ class AdminApprovalView(View):
                     "• SAFETY : 🛡️ SECURE ADMIN TRANSFER & FULL ACCESS\n"
                     "```"
                 ),
-                color=0xFFB800,  # لون ذهبي فخم
+                color=0xFFB800,
                 timestamp=datetime.datetime.utcnow()
             )
             pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`💲 {self.price_num} USD`** *(Crypto Payment)*", inline=True)
@@ -462,8 +461,8 @@ class AdminApprovalView(View):
             self.reject.disabled = True
             self.sold_btn.disabled = False
             
-            await interaction.message.edit(content="✅ **Listing Published with Luxury Store Layout!**", view=self)
-            await interaction.followup.send("✅ تم نشر العرض بتصميم المتجر الفخم في المنتدى بنجاح!", ephemeral=True)
+            await interaction.message.edit(content="✅ **Listing Published Successfully with Luxury Layout!**", view=self)
+            await interaction.followup.send("✅ **Listing successfully published to the forum marketplace!**", ephemeral=True)
 
             if self.launcher_msg:
                 try:
@@ -490,7 +489,7 @@ class AdminApprovalView(View):
 
         except Exception as e:
             print(f"Approval error: {e}")
-            await interaction.followup.send(f"❌ حدث خطأ أثناء النشر: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ An error occurred during publishing: `{e}`", ephemeral=True)
 
     @discord.ui.button(label="Reject Listing", style=discord.ButtonStyle.danger, emoji="❌", row=1)
     async def reject(self, interaction: discord.Interaction, button: Button):
