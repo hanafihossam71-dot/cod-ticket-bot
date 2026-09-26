@@ -820,7 +820,6 @@ HTML_PAGE = """<!DOCTYPE html>
             transform: translateY(-2px);
         }
 
-        /* تنسيق شاشة النجاح المخصصة بعد الإرسال */
         .success-screen {
             display: none;
             text-align: center;
@@ -909,7 +908,8 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="subtitle">Submit your account listing & upload unlimited proof screenshots in one click.</div>
 
             <label for="price">Asking Price ($ USD)</label>
-            <input type="text" id="price" placeholder="e.g. 150 (Paid in Crypto equivalent)" required>
+            <!-- يقبل الأرقام فقط ويمسح أي حرف فوراً -->
+            <input type="text" id="price" inputmode="numeric" placeholder="e.g. 150 (Numbers only)" oninput="filterNumbersOnly(this)" required>
 
             <label for="desc">Offer Description</label>
             <textarea id="desc" rows="4" placeholder="Detail your account: mastery camos, levels, rank, skins, CP, access details. No personal contacts." required></textarea>
@@ -962,6 +962,11 @@ HTML_PAGE = """<!DOCTYPE html>
         const progressPercent = document.getElementById('progressPercent');
         const submitBtn = document.getElementById('submitBtn');
         const status = document.getElementById('status');
+
+        // فلترة خانة السعر لمنع الحروف وقبول الأرقام فقط بشكل فوري
+        function filterNumbersOnly(input) {
+            input.value = input.value.replace(/[^0-9]/g, '');
+        }
 
         ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
             dropArea.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); }, false);
@@ -1065,7 +1070,11 @@ HTML_PAGE = """<!DOCTYPE html>
             const price = document.getElementById('price').value.trim();
             const desc = document.getElementById('desc').value.trim();
 
-            if (!price) { alert("Please specify an asking price."); return; }
+            if (!price || isNaN(price) || parseInt(price) <= 0) { 
+                alert("Please enter a valid numeric asking price (numbers only)."); 
+                document.getElementById('price').focus();
+                return; 
+            }
             if (!desc) { alert("Please provide an account description."); return; }
             if (!isUploaded || uploadedCount === 0) { alert("Please wait for screenshots to finish uploading."); return; }
 
