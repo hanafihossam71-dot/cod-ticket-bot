@@ -16,11 +16,9 @@ SUPPORT_ROLE_ID = 1552628903481184336            # آيدي رتبة Admin
 TICKET_CATEGORY_ID = 1552642061608419408       # تصنيف تذاكر الطلبات العامة (Tickets ✅)
 SELL_CATEGORY_ID = 1552642160992591892           # تصنيف تذاكر بيع الحسابات
 TICKET_LOGS_CHANNEL_ID = 1552640603639259207     # روم حفظ سجلات التذاكر المحذوفة
+MARKETPLACE_CHANNEL_ID = 1553528281062441053     # روم المتجر النصي الجديد (Text Channel)
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
-
-# آيدي الروم النصي المخصص لعروض الحسابات (النشر عبر البوت مباشرة لدعم الأزرار)
-MARKETPLACE_CHANNEL_ID = 1553436681611386961     
 
 WEB_PORT = int(os.environ.get("PORT", 8080))
 BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
@@ -406,7 +404,7 @@ class AdminApprovalView(View):
         try:
             market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
             if not market_channel:
-                return await interaction.followup.send("❌ روم المعروضات (MARKETPLACE_CHANNEL_ID) غير موجود!", ephemeral=True)
+                return await interaction.followup.send("❌ روم المتجر (MARKETPLACE_CHANNEL_ID) غير موجود!", ephemeral=True)
 
             pro_market_embed = discord.Embed(
                 title=f"⚡ {self.offer_title.upper()}",
@@ -424,7 +422,6 @@ class AdminApprovalView(View):
 
             market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
             
-            # إرسال الرسالة عبر البوت مباشرة في الروم النصي لدعم الأزرار تماماً
             payload_message = await market_channel.send(embed=pro_market_embed, view=market_view)
             self.posted_market_message = payload_message
             webhook_msg_url = payload_message.jump_url
@@ -433,8 +430,8 @@ class AdminApprovalView(View):
             self.reject.disabled = True
             self.sold_btn.disabled = False
             
-            await interaction.message.edit(content="✅ **Listing Published via Bot with Pro Layout!**", view=self)
-            await interaction.followup.send("✅ تم نشر العرض بنجاح في روم المتجر!", ephemeral=True)
+            await interaction.message.edit(content="✅ **Listing Published to Marketplace!**", view=self)
+            await interaction.followup.send("✅ تم نشر العرض بنجاح في روم المتجر الأنيق!", ephemeral=True)
 
             if self.launcher_msg:
                 try:
@@ -1047,7 +1044,7 @@ async def pay(ctx):
     embed.add_field(name="🟢 USDT (TRC-20) [Recommended]", value=f"{code_block}text\n{CRYPTO_ADDRESSES['USDT_TRC20']}\n{code_block}", inline=False)
     embed.add_field(name="🟡 USDT (BEP-20 / BSC)", value=f"{code_block}text\n{CRYPTO_ADDRESSES['USDT_BEP20']}\n{code_block}", inline=False)
     embed.add_field(name="⚪ Litecoin (LTC) [Low Fee]", value=f"{code_block}text\n{CRYPTO_ADDRESSES['LTC']}\n{code_block}", inline=False)
-    embed.add_field(name="🟠 Bitcoin (BTC)", value=f"{code_block}text\n{CRYPTO_ADDRESS_['BTC'] if 'BTC' in CRYPTO_ADDRESSES else CRYPTO_ADDRESSES['BTC']}\n{code_block}", inline=False)
+    embed.add_field(name="🟠 Bitcoin (BTC)", value=f"{code_block}text\n{CRYPTO_ADDRESSES['BTC']}\n{code_block}", inline=False)
     embed.set_footer(text="Pedrao22k. | Always double check the address before transferring")
     await ctx.send(embed=embed)
 
@@ -1108,7 +1105,7 @@ async def setup_market(ctx):
         title="⚡ PEDRAO22K. | SELLER SUBMISSION PORTAL",
         description=(
             "Want to list your personal Call of Duty / Warzone account for sale in our verified marketplace?\n\n"
-            "### 📋 How line works:\n"
+            "### 📋 How it works:\n"
             "1. Click the button below to open your private seller channel.\n"
             "2. Fill in your offer title, description & price in a single window.\n"
             "3. Upload screenshots and click on your preferred image to set it as Cover Thumbnail.\n"
