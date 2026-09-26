@@ -20,7 +20,6 @@ MARKETPLACE_CHANNEL_ID = 1553436681611386961     # روم الـ Forum الجد�
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
-# إعدادات واجهة الويب على Railway
 WEB_PORT = int(os.environ.get("PORT", 8080))
 BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
 
@@ -78,7 +77,6 @@ async def on_member_join(member: discord.Member):
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
-
     if message.channel.name.startswith("🏷️・sell-"):
         author_clean = message.author.name.lower().replace(" ", "-")
         if message.channel.name.endswith(author_clean) or not message.author.guild_permissions.administrator:
@@ -87,7 +85,6 @@ async def on_message(message: discord.Message):
                 return
             except:
                 pass
-
     await bot.process_commands(message)
 
 class ConfirmCloseView(View):
@@ -114,7 +111,6 @@ class ConfirmCloseView(View):
             log_text += f"[{timestamp}] {message.author}: {content}\n"
 
         transcript_file = discord.File(io.BytesIO(log_text.encode('utf-8')), filename=f"transcript-{channel.name}.txt")
-
         logs_channel = interaction.guild.get_channel(TICKET_LOGS_CHANNEL_ID)
         if logs_channel:
             log_embed = discord.Embed(
@@ -181,7 +177,6 @@ class TicketSelect(Select):
             overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
 
         ticket_channel = await guild.create_text_channel(name=channel_name, category=category, overwrites=overwrites)
-
         embed = discord.Embed(
             title="⚡ PEDRAO22K. | ORDER & SUPPORT",
             description=(
@@ -260,20 +255,6 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
 
         try:
             await self.ticket_channel.send(f"⚠️ {self.seller.mention} **Your listing was declined.** Reason: `{reason}`")
-        except:
-            pass
-
-        try:
-            dm_embed = discord.Embed(
-                title="❌ YOUR LISTING SUBMISSION WAS DECLINED",
-                description=(
-                    "Your Call of Duty listing submission has been declined by Pedrao22k Staff.\n\n"
-                    f"**Reason Provided:**\n> {reason}\n\n"
-                    "Please re-check our guidelines and submit clear, unwatermarked proof."
-                ),
-                color=0xEF4444
-            )
-            await self.seller.send(embed=dm_embed)
         except:
             pass
 
@@ -421,9 +402,13 @@ class AdminApprovalView(View):
         await interaction.response.defer()
         market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
         
-        self.embed_data.title = f"🛒 {self.offer_title}"
+        # تصميم Embed فخم ومرتب تماماً يشبه المتاجر الاحترافية الكبرى
+        self.embed_data.title = f"⚡ {self.offer_title}"
         self.embed_data.color = 0xF59E0B
-        self.embed_data.set_footer(text="Pedrao22k. | Verified Listing • Click 'Buy This Account' below to purchase!")
+        self.embed_data.clear_fields()
+        self.embed_data.add_field(name="💰 Asking Price", value=f"`{self.price_str}`", inline=False)
+        self.embed_data.add_field(name="📋 Account Details & Description", value=self.embed_data.description or "No description provided.", inline=False)
+        self.embed_data.set_footer(text="Pedrao22k. | Verified Store • Click 'Buy This Account' below to purchase securely!")
 
         thread_title = f"{self.price_str} • {self.offer_title}"
         if len(thread_title) > 95:
@@ -461,7 +446,7 @@ class AdminApprovalView(View):
         button.disabled = True
         self.reject.disabled = True
         self.sold_btn.disabled = False
-        await interaction.edit_original_response(content="✅ **Listing Published to Forum Marketplace! Click 'Mark as SOLD' below when completed.**", view=self)
+        await interaction.edit_original_response(content="✅ **Listing Published with Pro Layout! Click 'Mark as SOLD' when completed.**", view=self)
         
         market_link = self.posted_market_message.jump_url if self.posted_market_message else "#accounts-for-sale"
 
@@ -671,6 +656,12 @@ HTML_PAGE = """<!DOCTYPE html>
         .preview-item.selected { border-color: var(--gold-primary); box-shadow: 0 0 10px rgba(255,184,0,0.6); }
         .preview-item .badge { position: absolute; bottom: 2px; right: 2px; background: var(--gold-primary); color: #000; font-size: 9px; font-weight: bold; padding: 1px 4px; border-radius: 4px; display: none; }
         .preview-item.selected .badge { display: block; }
+        
+        .progress-box { display: none; margin-bottom: 20px; }
+        .progress-header { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; margin-bottom: 6px; color: #CBD5E1; }
+        .progress-bar-bg { width: 100%; height: 10px; background: #232530; border-radius: 6px; overflow: hidden; border: 1px solid rgba(255, 255, 255, 0.06); }
+        .progress-bar-fill { width: 0%; height: 100%; background: linear-gradient(90deg, #D97706, #FFB800); border-radius: 6px; transition: width 0.2s ease; box-shadow: 0 0 12px rgba(255, 184, 0, 0.6); }
+
         .btn {
             background: linear-gradient(135deg, #FFB800 0%, #D97706 100%); color: #050507; padding: 15px 28px;
             border: none; border-radius: 10px; font-size: 15px; font-weight: 800; cursor: pointer; width: 100%;
@@ -703,6 +694,16 @@ HTML_PAGE = """<!DOCTYPE html>
             <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFileSelection(this.files)">
 
             <div class="preview-grid" id="previewGrid"></div>
+
+            <div class="progress-box" id="progressBox">
+                <div class="progress-header">
+                    <span id="progressText">Uploading to Staff...</span>
+                    <span id="progressPercent" style="color: #FFB800;">0%</span>
+                </div>
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" id="progressBarFill"></div>
+                </div>
+            </div>
 
             <button id="submitBtn" class="btn" disabled onclick="submitFinalListing()">🚀 Submit Listing to Staff</button>
             <div id="status" style="text-align: center; font-size: 13px; color: #94A3B8; margin-top: 12px;">Select images to begin.</div>
@@ -772,22 +773,63 @@ HTML_PAGE = """<!DOCTYPE html>
                 formData.append("files", file);
             });
 
-            document.getElementById('submitBtn').disabled = true;
-            document.getElementById('submitBtn').innerText = "⏳ Uploading & Submitting...";
+            const submitBtn = document.getElementById('submitBtn');
+            submitBtn.disabled = true;
+            submitBtn.innerText = "⏳ Processing...";
 
-            try {
-                const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
-                const json = await res.json();
-                if (json.status === "ok") {
-                    document.getElementById('formScreen').innerHTML = '<div style="text-align:center; padding: 40px;"><h2 style="color:#10B981">🎉 SUBMITTED SUCCESSFULLY!</h2><p>You can close this window and return to Discord.</p></div>';
-                } else {
-                    alert(json.error || "Submission failed.");
-                    document.getElementById('submitBtn').disabled = false;
+            const progressBox = document.getElementById('progressBox');
+            const progressBarFill = document.getElementById('progressBarFill');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressText = document.getElementById('progressText');
+            
+            progressBox.style.display = "block";
+            progressBarFill.style.width = "0%";
+            progressPercent.innerText = "0%";
+            progressText.innerText = `Uploading ${selectedFiles.length} images to Discord...`;
+
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", "/api/finalize_listing", true);
+
+            xhr.upload.onprogress = function(e) {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    progressBarFill.style.width = percent + "%";
+                    progressPercent.innerText = percent + "%";
+                    if (percent >= 100) {
+                        progressText.innerText = "⚡ Processing & Dispatching to Staff...";
+                    }
                 }
-            } catch (e) {
-                alert("Network error.");
-                document.getElementById('submitBtn').disabled = false;
-            }
+            };
+
+            xhr.onload = function() {
+                try {
+                    const json = JSON.parse(xhr.responseText);
+                    if (xhr.status === 200 && json.status === "ok") {
+                        progressBarFill.style.width = "100%";
+                        progressPercent.innerText = "100%";
+                        document.getElementById('formScreen').innerHTML = '<div style="text-align:center; padding: 40px;"><h2 style="color:#10B981">🎉 SUBMITTED SUCCESSFULLY!</h2><p style="color:#CBD5E1;">Your listing with all proofs has been sent to staff. You can close this window and return to Discord.</p></div>';
+                    } else {
+                        alert(json.error || "Submission failed.");
+                        submitBtn.disabled = false;
+                        submitBtn.innerText = "🚀 Submit Listing to Staff";
+                        progressBox.style.display = "none";
+                    }
+                } catch (e) {
+                    alert("Server response error.");
+                    submitBtn.disabled = false;
+                    submitBtn.innerText = "🚀 Submit Listing to Staff";
+                    progressBox.style.display = "none";
+                }
+            };
+
+            xhr.onerror = function() {
+                alert("Network connection error.");
+                submitBtn.disabled = false;
+                submitBtn.innerText = "🚀 Submit Listing to Staff";
+                progressBox.style.display = "none";
+            };
+
+            xhr.send(formData);
         }
     </script>
 </body>
@@ -822,8 +864,9 @@ async def handle_finalize_listing(request):
                 price = (await part.read()).decode('utf-8')
             elif part.name == "description":
                 description = (await part.read()).decode('utf-8')
-            elif part.name == "primaryIndex":
-                primary_index = int((await part.read()).decode('utf-8'))
+            elif part.name, part.name == "primaryIndex", "primaryIndex":
+                val = (await part.read()).decode('utf-8')
+                primary_index = int(val) if val.isdigit() else 0
             elif part.name == "files":
                 filename = part.filename
                 if filename:
@@ -867,8 +910,6 @@ async def handle_finalize_listing(request):
                     discord_cdn_urls.append(att.url)
                 os.remove(fp)
 
-        full_display_title = f"Verified Account • {offer_title}"
-
         submitted_embed = discord.Embed(
             title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
             description=(
@@ -894,7 +935,7 @@ async def handle_finalize_listing(request):
             print(f"Error updating launcher message: {e}")
 
         admin_embed = discord.Embed(
-            title=f"📥 {full_display_title}",
+            title=f"📥 {offer_title}",
             description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
             color=0xF59E0B,
             timestamp=datetime.datetime.utcnow()
@@ -912,7 +953,7 @@ async def handle_finalize_listing(request):
                 ticket_channel=ticket_channel,
                 images=discord_cdn_urls,
                 launcher_msg=launcher_msg,
-                offer_title=full_display_title,
+                offer_title=offer_title,
                 price_str=formatted_price,
                 count_str=f"{len(discord_cdn_urls)} proofs"
             )
@@ -992,7 +1033,7 @@ async def testwelcome(ctx):
     if not channel:
         return await ctx.send("❌ Welcome channel not found.")
     embed = build_welcome_embed(ctx.author, ctx.guild)
-    await channel.send(content=f"👋 Welcome to the server, {ctx.author.mention}! *(Test Preview)*", embed=embed)
+    await channel.send(content=f"👋 Welcome to the server, {ctx.author.mention}!", embed=embed)
     await ctx.send(f"✅ Welcome message sent successfully to {channel.mention}!")
 
 @bot.command()
@@ -1021,7 +1062,7 @@ async def pay(ctx):
 async def complete(ctx):
     await ctx.message.delete()
     current_channel = ctx.channel
-    if not current_channel.name.startswith("✅"):
+    if not current_channel.name.style.startswith("✅") if hasattr(current_channel.name, 'style') else not current_channel.name.startswith("✅"):
         clean_name = current_channel.name.replace("🎫・", "").replace("🏷️・", "").replace("🛒・", "")
         new_name = f"✅・{clean_name}"
         await current_channel.edit(name=new_name)
@@ -1039,7 +1080,7 @@ async def complete(ctx):
     )
     embed.set_footer(text="Pedrao22k. | Fast • Secure • Competitive")
     view = FeedbackView()
-    view.add_item(Button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket_btn"))
+    view.add_item(Button(label="CloseTicket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket_btn"))
     await ctx.send(embed=embed, view=view)
 
 @bot.command()
@@ -1070,7 +1111,7 @@ async def setup_ticket(ctx):
 async def setup_market(ctx):
     await ctx.message.delete()
     embed = discord.Embed(
-        title="⚡ PEDRAO22K. | SELLER SUBMISSION PORTAL",
+        title="⚡ PEDRAO22K. | SESLER SUBMISSION PORTAL",
         description=(
             "Want to list your personal Call of Duty / Warzone account for sale in our verified marketplace?\n\n"
             "### 📋 How it works:\n"
