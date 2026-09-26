@@ -543,7 +543,6 @@ class MarketplaceLauncherView(View):
         if existing:
             return await interaction.followup.send(f"⚠️ You already have an open seller ticket: {existing.mention}", ephemeral=True)
 
-        # قفل الكتابة وإرفاق الملفات على البائع فور إنشاء التذكرة
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=False, attach_files=False),
@@ -908,7 +907,6 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="subtitle">Submit your account listing & upload unlimited proof screenshots in one click.</div>
 
             <label for="price">Asking Price ($ USD)</label>
-            <!-- يقبل الأرقام فقط ويمسح أي حرف فوراً -->
             <input type="text" id="price" inputmode="numeric" placeholder="e.g. 150 (Numbers only)" oninput="filterNumbersOnly(this)" required>
 
             <label for="desc">Offer Description</label>
@@ -936,12 +934,12 @@ HTML_PAGE = """<!DOCTYPE html>
             <div id="status">Select screenshots to begin instant upload.</div>
         </div>
 
-        <!-- شاشة النجاح والتأكيد المخصصة بعد الإرسال -->
+        <!-- شاشة النجاح والتأكيد المحدثة بالنص المطلوب حرفياً -->
         <div class="success-screen" id="successScreen">
             <div class="success-icon">🎉</div>
             <div class="success-title">YOUR OFFER IS UNDER REVIEW!</div>
             <div class="success-desc">
-                Your account details and proof screenshots have been securely received.<br><br>
+                Your account details, including the full description and all screenshots, have been safely received.<br><br>
                 <strong>👉 Please wait for the admin to approve your offer.</strong><br>
                 No further action is required from you here. We will notify you inside your Discord ticket once reviewed!
             </div>
@@ -963,7 +961,6 @@ HTML_PAGE = """<!DOCTYPE html>
         const submitBtn = document.getElementById('submitBtn');
         const status = document.getElementById('status');
 
-        // فلترة خانة السعر لمنع الحروف وقبول الأرقام فقط بشكل فوري
         function filterNumbersOnly(input) {
             input.value = input.value.replace(/[^0-9]/g, '');
         }
@@ -1078,7 +1075,6 @@ HTML_PAGE = """<!DOCTYPE html>
             if (!desc) { alert("Please provide an account description."); return; }
             if (!isUploaded || uploadedCount === 0) { alert("Please wait for screenshots to finish uploading."); return; }
 
-            // 1. قفل الزر وتفعيل شريط التحميل المستمر
             submitBtn.disabled = true;
             submitBtn.classList.remove('ready');
             submitBtn.innerText = "⏳ Processing...";
@@ -1099,7 +1095,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
                 const json = await res.json();
                 if (json.status === "ok") {
-                    // إخفاء النموذج بالكامل وعرض شاشة التأكيد والانتظار المخصصة
                     document.getElementById('formScreen').style.display = 'none';
                     document.getElementById('successScreen').style.display = 'block';
                 } else {
