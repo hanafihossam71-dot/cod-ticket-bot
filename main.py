@@ -16,7 +16,7 @@ SUPPORT_ROLE_ID = 1552628903481184336            # آيدي رتبة Admin
 TICKET_CATEGORY_ID = 1552642061608419408       # تصنيف تذاكر الطلبات العامة (Tickets ✅)
 SELL_CATEGORY_ID = 1552642160992591892           # تصنيف تذاكر بيع الحسابات
 TICKET_LOGS_CHANNEL_ID = 1552640603639259207     # روم حفظ سجلات التذاكر المحذوفة
-MARKETPLACE_CHANNEL_ID = 1553528281062441053     # روم المتجر النصي الجديد (Text Channel)
+MARKETPLACE_CHANNEL_ID = 1553436681611386961     # روم المنتدى (Forum Channel) للمعروضات
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
@@ -365,6 +365,7 @@ class AdminApprovalView(View):
         self.count_str = count_str
         self.current_index = 0
         self.posted_market_message = None
+        self.created_thread = None
         self.update_carousel()
 
     def update_carousel(self):
@@ -397,14 +398,18 @@ class AdminApprovalView(View):
             self.update_carousel()
             await interaction.response.edit_message(embed=self.embed_data, view=self)
 
-    @discord.ui.button(label="Approve & Post to Marketplace", style=discord.ButtonStyle.success, emoji="✅", row=1)
+    @discord.ui.button(label="Approve & Post to Forum", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def approve(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
         
         try:
             market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
             if not market_channel:
-                return await interaction.followup.send("❌ روم المتجر (MARKETPLACE_CHANNEL_ID) غير موجود!", ephemeral=True)
+                return await interaction.followup.send("❌ روم المنتدى (MARKETPLACE_CHANNEL_ID) غير موجود!", ephemeral=True)
+
+            thread_title = f"⚡ [${self.price_num} USD] • {self.offer_title}"
+            if len(thread_title) > 95:
+                thread_title = thread_title[:95]
 
             pro_market_embed = discord.Embed(
                 title=f"⚡ {self.offer_title.upper()}",
@@ -421,24 +426,43 @@ class AdminApprovalView(View):
                 pro_market_embed.set_image(url=self.images[0])
 
             market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
-            
-            payload_message = await market_channel.send(embed=pro_market_embed, view=market_view)
-            self.posted_market_message = payload_message
-            webhook_msg_url = payload_message.jump_url
+
+            available_tag = None
+            if hasattr(market_channel, 'available_tags'):
+                for tag in market_channel.available_tags:
+                    if "avail" in tag.name.lower():
+                        available_tag = tag
+                        break
+            applied_tags = [available_tag] if available_tag else []
+
+            if isinstance(market_channel, discord.ForumChannel):
+                thread_with_message = await market_channel.create_thread(
+                    name=thread_title,
+                    embed=pro_market_embed,
+                    view=market_view,
+                    applied_tags=applied_tags
+                )
+                self.posted_market_message = thread_with_message.message
+                self.created_thread = thread_with_message.thread
+                webhook_msg_url = thread_with_message.message.jump_url
+            else:
+                payload_message = await market_channel.send(embed=pro_market_embed, view=market_view)
+                self.posted_market_message = payload_message
+                webhook_msg_url = payload_message.jump_url
 
             button.disabled = True
             self.reject.disabled = True
             self.sold_btn.disabled = False
             
-            await interaction.message.edit(content="✅ **Listing Published to Marketplace!**", view=self)
-            await interaction.followup.send("✅ تم نشر العرض بنجاح في روم المتجر الأنيق!", ephemeral=True)
+            await interaction.message.edit(content="✅ **Listing Published to Forum Marketplace!**", view=self)
+            await interaction.followup.send("✅ تم نشر العرض بنجاح في المنتدى كمنشور فخم ومنسق!", ephemeral=True)
 
             if self.launcher_msg:
                 try:
                     approved_embed = discord.Embed(
                         title="🎉 LISTING APPROVED & PUBLISHED ON MARKETPLACE",
                         description=(
-                            f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published**.\n\n"
+                            f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** to the marketplace.\n\n"
                             f"🔗 **Listing URL:** [Click to View on Market]({webhook_msg_url})\n"
                         ),
                         color=0x10B981,
@@ -486,8 +510,20 @@ class AdminApprovalView(View):
             sold_view = MarketplaceCarouselView(images=self.images, embed_data=sold_embed, is_sold=True)
             await self.posted_market_message.edit(embed=sold_embed, view=sold_view)
 
+        if hasattr(self, 'created_thread') and self.created_thread:
+            try:
+                sold_tag = None
+                for tag in self.created_thread.parent.available_tags:
+                    if "close" in tag.name.lower() or "sold" in tag.name.lower():
+                        sold_tag = tag
+                        break
+                if sold_tag:
+                    await self.created_thread.edit(applied_tags=[sold_tag], locked=True)
+            except Exception as e:
+                print(f"Error locking thread: {e}")
+
         button.disabled = True
-        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT!**", view=self)
+        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT in the marketplace!**", view=self)
         try:
             await self.ticket_channel.send("🎉 **Your account has been officially marked as SOLD! Thank you for selling with Pedrao22k Services.**")
         except:
