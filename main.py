@@ -20,10 +20,9 @@ MARKETPLACE_CHANNEL_ID = 1552628139618734170     # روم المعروضات acc
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
-# قراءة المنفذ والرابط تلقائياً من بيئة الاستضافة
-WEB_PORT = int(os.environ.get("PORT", 5000))
-# إذا وُجد رابط خارجي من Render يتم اعتماده، وإلا يستخدم الرابط الافتراضي
-BASE_WEB_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://happier-unify-chess.ngrok-free.dev")
+# إعدادات واجهة الويب على Railway (مطابقة للمنفذ والرابط الخاص بك)
+WEB_PORT = int(os.environ.get("PORT", 8080))
+BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
 
 CRYPTO_ADDRESSES = {
     "USDT_TRC20": "TYourTRC20AddressHereXXXXXXXXXXXXXX",
@@ -80,7 +79,7 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # قفل الشات: مسح أي رسالة نصية من البائع داخل تذكرة البيع
+    # قفل الشات: مسح أي رسالة نصية يرسلها البائع في تذكرة البيع لمنع التخريب
     if message.channel.name.startswith("🏷️・sell-"):
         author_clean = message.author.name.lower().replace(" ", "-")
         if message.channel.name.endswith(author_clean) or not message.author.guild_permissions.administrator:
@@ -699,6 +698,9 @@ HTML_PAGE = """<!DOCTYPE html>
 </html>
 """
 
+async def ping_handler(request):
+    return web.Response(text="Pedrao22k Bot is Online 24/7!", status=200)
+
 async def handle_web_page(request):
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
@@ -826,11 +828,11 @@ async def session_cleaner_task():
 
 async def start_web_server():
     app = web.Application(client_max_size=100 * 1024 * 1024)
+    app.router.add_get("/", ping_handler)
     app.router.add_get("/upload", handle_web_page)
     app.router.add_post("/api/submit_listing", handle_api_submit)
     runner = web.AppRunner(app)
     await runner.setup()
-    # ربط السيرفر على 0.0.0.0 والمنفذ المحدد تلقائياً للبيئة السحابية
     site = web.TCPSite(runner, "0.0.0.0", WEB_PORT)
     await site.start()
     print(f"🌐 All-in-One Seller Portal Engine online on 0.0.0.0:{WEB_PORT}!")
@@ -891,7 +893,7 @@ async def on_ready():
     bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
     bot.loop.create_task(start_web_server())
     bot.loop.create_task(session_cleaner_task())
-    print(f"Logged in as {bot.user.name} | Cloud / Local Dynamic Port Engine Online!")
+    print(f"Logged in as {bot.user.name} | Railway Cloud Engine Online 24/7!")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
