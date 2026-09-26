@@ -401,64 +401,71 @@ class AdminApprovalView(View):
 
     @discord.ui.button(label="Approve & Post to Marketplace", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def approve(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.defer()
+        await interaction.response.defer(ephemeral=True)
         
-        pro_market_embed = discord.Embed(
-            title=f"⚡ {self.offer_title.upper()}",
-            description="```yaml\nSTATUS: VERIFIED & AVAILABLE FOR PURCHASE\nESCROW: 100% SECURE VIA ADMIN TRANSFER```",
-            color=0xF59E0B,
-            timestamp=datetime.datetime.utcnow()
-        )
-        pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`${self.price_num} USD`** *(Crypto Payment)*", inline=True)
-        pro_market_embed.add_field(name="🎮 Game / Category", value="> **`Call of Duty: Warzone / MW3`**", inline=True)
-        pro_market_embed.add_field(name="📋 Account Details & Summary", value=f"```{self.description}```", inline=False)
-        pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to open order")
-
-        if self.images:
-            pro_market_embed.set_image(url=self.images[0])
-
-        market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
-        
-        webhook_msg_url = "#"
-        async with ClientSession() as session:
-            webhook = discord.Webhook.from_url(MARKETPLACE_WEBHOOK_URL, session=session)
-            payload_message = await webhook.send(
-                embed=pro_market_embed,
-                view=market_view,
-                username="Pedrao22k Services",
-                avatar_url=interaction.guild.icon.url if interaction.guild.icon else "https://cdn.discordapp.com/embed/avatars/0.png",
-                wait=True
-            )
-            webhook_msg_url = payload_message.jump_url
-            self.posted_market_message = payload_message
-
-        button.disabled = True
-        self.reject.disabled = True
-        self.sold_btn.disabled = False
-        await interaction.edit_original_response(content="✅ **Listing Published via Webhook with Pro Layout!**", view=self)
-
-        if self.launcher_msg:
-            try:
-                approved_embed = discord.Embed(
-                    title="🎉 LISTING APPROVED & PUBLISHED ON MARKETPLACE",
-                    description=(
-                        f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** via Webhook.\n\n"
-                        f"🔗 **Listing URL:** [Click to View on Market]({webhook_msg_url})\n"
-                    ),
-                    color=0x10B981,
-                    timestamp=datetime.datetime.utcnow()
-                )
-                if self.seller.display_avatar:
-                    approved_embed.set_thumbnail(url=self.seller.display_avatar.url)
-                approved_embed.set_footer(text="Pedrao22k Services • Listing Live")
-                await self.launcher_msg.edit(embed=approved_embed, view=None)
-            except Exception as e:
-                print(f"Error editing launcher to approved: {e}")
-
         try:
-            await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your listing is now live!** Check it here: {webhook_msg_url}")
-        except:
-            pass
+            pro_market_embed = discord.Embed(
+                title=f"⚡ {self.offer_title.upper()}",
+                description="```yaml\nSTATUS: VERIFIED & AVAILABLE FOR PURCHASE\nESCROW: 100% SECURE VIA ADMIN TRANSFER```",
+                color=0xF59E0B,
+                timestamp=datetime.datetime.utcnow()
+            )
+            pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`${self.price_num} USD`** *(Crypto Payment)*", inline=True)
+            pro_market_embed.add_field(name="🎮 Game / Category", value="> **`Call of Duty: Warzone / MW3`**", inline=True)
+            pro_market_embed.add_field(name="📋 Account Details & Summary", value=f"```{self.description}```", inline=False)
+            pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to open order")
+
+            if self.images:
+                pro_market_embed.set_image(url=self.images[0])
+
+            market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
+            
+            webhook_msg_url = "#"
+            async with ClientSession() as session:
+                webhook = discord.Webhook.from_url(MARKETPLACE_WEBHOOK_URL, session=session)
+                payload_message = await webhook.send(
+                    embed=pro_market_embed,
+                    view=market_view,
+                    username="Pedrao22k Services",
+                    avatar_url=interaction.guild.icon.url if interaction.guild.icon else "https://cdn.discordapp.com/embed/avatars/0.png",
+                    wait=True
+                )
+                webhook_msg_url = payload_message.jump_url
+                self.posted_market_message = payload_message
+
+            button.disabled = True
+            self.reject.disabled = True
+            self.sold_btn.disabled = False
+            
+            await interaction.message.edit(content="✅ **Listing Published via Webhook with Pro Layout!**", view=self)
+            await interaction.followup.send("✅ تم نشر العرض بنجاح عبر الـ Webhook إلى الروم المخصص!", ephemeral=True)
+
+            if self.launcher_msg:
+                try:
+                    approved_embed = discord.Embed(
+                        title="🎉 LISTING APPROVED & PUBLISHED ON MARKETPLACE",
+                        description=(
+                            f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** via Webhook.\n\n"
+                            f"🔗 **Listing URL:** [Click to View on Market]({webhook_msg_url})\n"
+                        ),
+                        color=0x10B981,
+                        timestamp=datetime.datetime.utcnow()
+                    )
+                    if self.seller.display_avatar:
+                        approved_embed.set_thumbnail(url=self.seller.display_avatar.url)
+                    approved_embed.set_footer(text="Pedrao22k Services • Listing Live")
+                    await self.launcher_msg.edit(embed=approved_embed, view=None)
+                except Exception as e:
+                    print(f"Error editing launcher to approved: {e}")
+
+            try:
+                await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your listing is now live!** Check it here: {webhook_msg_url}")
+            except:
+                pass
+
+        except Exception as e:
+            print(f"Approval error: {e}")
+            await interaction.followup.send(f"❌ حدث خطأ أثناء النشر: `{e}`", ephemeral=True)
 
     @discord.ui.button(label="Reject Listing", style=discord.ButtonStyle.danger, emoji="❌", row=1)
     async def reject(self, interaction: discord.Interaction, button: Button):
@@ -493,7 +500,7 @@ class AdminApprovalView(View):
                 )
 
         button.disabled = True
-        await interaction.edit_original_response(content="🔒 **Account marked as SOLD OUT via Webhook!**", view=self)
+        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT via Webhook!**", view=self)
         try:
             await self.ticket_channel.send("🎉 **Your account has been officially marked as SOLD! Thank you for selling with Pedrao22k Services.**")
         except:
@@ -646,7 +653,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <label>Upload Screenshots (Click an image to set as Cover Thumbnail)</label>
             <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
                 <div style="font-size: 32px; color: #FFB800;">⚡</div>
-                <div id="dropText" style="font-weight: 700; color: #FFF;">Click or Drag & Drop Images Here</div>
+                <div id="dropText" style="font-weight: 700; font-size: 1ffe;">Click or Drag & Drop Images Here</div>
                 <div id="dropSub" style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
             </div>
             <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFileSelection(this.files)">
@@ -731,7 +738,6 @@ HTML_PAGE = """<!DOCTYPE html>
                         progressText.innerText = "✅ Screenshots Ready!";
                         
                         document.getElementById('dropText').innerText = `✨ ${uploadedCount} Screenshots Ready`;
-                        document.getElementById('dropText').style.color = '#FFB800';
                         document.getElementById('dropSub').innerText = "All photos loaded. Click an image below to set Cover.";
 
                         isUploaded = true;
@@ -855,8 +861,11 @@ async def handle_upload_images_only(request):
                             f.write(chunk)
                     saved_paths.append(file_path)
 
-        if not session_id or session_id not in active_web_sessions:
-            return web.json_response({"status": "error", "error": "Session expired."}, status=400)
+        if not session_id:
+            return web.json_response({"status": "error", "error": "Missing session ID"}, status=400)
+
+        if session_id not in active_web_sessions:
+            return web.json_response({"status": "error", "error": "Session expired or bot restarted. Please reopen from Discord ticket."}, status=400)
 
         active_web_sessions[session_id]["uploaded_files"].extend(saved_paths)
         total_files = len(active_web_sessions[session_id]["uploaded_files"])
