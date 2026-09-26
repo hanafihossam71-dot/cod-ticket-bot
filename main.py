@@ -79,7 +79,6 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # قفل الشات: مسح أي رسالة نصية يرسلها البائع في تذكرة البيع لمنع التخريب
     if message.channel.name.startswith("🏷️・sell-"):
         author_clean = message.author.name.lower().replace(" ", "-")
         if message.channel.name.endswith(author_clean) or not message.author.guild_permissions.administrator:
@@ -472,7 +471,6 @@ class MarketplaceLauncherView(View):
         if existing:
             return await interaction.followup.send(f"⚠️ You already have an open seller ticket: {existing.mention}", ephemeral=True)
 
-        # قفل الكتابة وإرفاق الملفات على البائع فور إنشاء التذكرة
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=False, attach_files=False),
@@ -514,7 +512,7 @@ class MarketplaceLauncherView(View):
             "uploaded_files": []
         }
 
-# ======================== صفحة الويب مع شريط التحميل والرفع السريع ========================
+# ======================== صفحة الويب ========================
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -675,7 +673,6 @@ HTML_PAGE = """<!DOCTYPE html>
             filter: drop-shadow(0 0 12px rgba(255, 184, 0, 0.8));
         }
 
-        /* شريط التقدم الرمادي الذي يمتلئ بالبرتقالي/الذهبي */
         .progress-box {
             display: none;
             margin-bottom: 20px;
@@ -705,7 +702,6 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: 0 0 12px rgba(255, 184, 0, 0.6);
         }
 
-        /* حالة الزر (رمادي معطل أثناء الرفع، برتقالي مشرق عند الجاهزية) */
         .btn {
             background: #252631;
             color: #64748B;
@@ -736,6 +732,27 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: 0 6px 30px rgba(255, 184, 0, 0.7);
             transform: translateY(-2px);
         }
+
+        /* حالة النجاح للزر: خلفية خضراء مع أنيميشن متحرك */
+        .btn.success-btn {
+            background: linear-gradient(135deg, #10B981 0%, #059669 100%) !important;
+            color: #FFFFFF !important;
+            cursor: default !important;
+            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.5) !important;
+            animation: pulse-success 1.5s infinite alternate ease-in-out;
+        }
+
+        @keyframes pulse-success {
+            0% {
+                transform: scale(1);
+                box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+            }
+            100% {
+                transform: scale(1.02);
+                box-shadow: 0 0 25px rgba(16, 185, 129, 0.85);
+            }
+        }
+
         #status { 
             margin-top: 15px; 
             font-size: 13px; 
@@ -745,6 +762,10 @@ HTML_PAGE = """<!DOCTYPE html>
         .success { 
             color: #10B981 !important; 
             font-weight: bold; 
+        }
+        .error-msg {
+            color: #EF4444 !important;
+            font-weight: bold;
         }
     </style>
 </head>
@@ -769,7 +790,6 @@ HTML_PAGE = """<!DOCTYPE html>
             <div id="dropSub" style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
         </div>
 
-        <!-- شريط التقدم الرمادي / البرتقالي -->
         <div class="progress-box" id="progressBox">
             <div class="progress-header">
                 <span id="progressText">Uploading Screenshots...</span>
@@ -828,23 +848,23 @@ HTML_PAGE = """<!DOCTYPE html>
             uploadImagesDirectly(validFiles);
         }
 
-        // رفع الصور فورياً في الخلفية مع شريط التقدم الرمادي -> البرتقالي
         function uploadImagesDirectly(files) {
             if (!session) {
-                alert("Invalid session. Please reopen from Discord.");
+                alert("Invalid or missing session. Please open the link again from Discord.");
                 return;
             }
 
             isUploaded = false;
             submitBtn.disabled = true;
             submitBtn.classList.remove('ready');
+            submitBtn.classList.remove('success-btn');
             submitBtn.innerText = "⏳ Uploading Screenshots...";
 
             progressBox.style.display = "block";
             progressBarFill.style.width = "0%";
             progressText.innerText = `Uploading ${files.length} screenshots...`;
             progressPercent.innerText = "0%";
-            status.innerText = "Please wait while images are uploading...";
+            status.innerText = "Uploading screenshots to server...";
 
             const formData = new FormData();
             formData.append("session", session);
@@ -864,40 +884,39 @@ HTML_PAGE = """<!DOCTYPE html>
             };
 
             xhr.onload = function() {
-                if (xhr.status === 200) {
+                try {
                     const res = JSON.parse(xhr.responseText);
-                    if (res.status === "ok") {
+                    if (xhr.status === 200 && res.status === "ok") {
                         uploadedCount = res.total_uploaded;
                         progressBarFill.style.width = "100%";
                         progressPercent.innerText = "100%";
-                        progressText.innerText = "✅ All Screenshots Uploaded & Ready!";
+                        progressText.innerText = "✅ Screenshots Ready!";
                         
                         document.getElementById('dropText').innerText = `✨ ${uploadedCount} Screenshots Ready`;
                         document.getElementById('dropText').style.color = '#FFB800';
                         document.getElementById('dropSub').innerText = "All photos loaded. Fill details and click submit below.";
 
-                        // إتاحة الزر باللون البرتقالي فوراً
                         isUploaded = true;
                         submitBtn.disabled = false;
                         submitBtn.classList.add('ready');
                         submitBtn.innerText = "🚀 Submit Listing to Staff";
-                        status.innerHTML = `<span class="success">✨ ${uploadedCount} photo(s) ready! Click submit to send instantly.</span>`;
+                        status.innerHTML = `<span class="success">✨ ${uploadedCount} photo(s) ready! Click submit to dispatch.</span>`;
                     } else {
-                        status.innerText = "❌ Upload error: " + (res.error || "Unknown");
+                        status.innerHTML = `<span class="error-msg">❌ Error: ${res.error || "Session expired. Please reopen from Discord."}</span>`;
+                        submitBtn.innerText = "❌ Upload Failed";
                     }
-                } else {
-                    status.innerText = "❌ Upload failed. Please re-select images.";
+                } catch (e) {
+                    status.innerHTML = `<span class="error-msg">❌ Server response error. Please reopen link from Discord ticket.</span>`;
                 }
             };
 
             xhr.onerror = function() {
-                status.innerText = "❌ Connection failed during upload.";
+                status.innerHTML = `<span class="error-msg">❌ Network connection error. Please try again.</span>`;
             };
 
             xhr.send(formData);
         }
 
-        // إرسال فوري مباشر بدون أي تأخير للأدمن
         async function submitFinalListing() {
             const price = document.getElementById('price').value.trim();
             const desc = document.getElementById('desc').value.trim();
@@ -922,14 +941,16 @@ HTML_PAGE = """<!DOCTYPE html>
                 if (json.status === "ok") {
                     status.innerHTML = `<span class="success">🎉 Dispatched Directly to Admin Review! You can return to Discord.</span>`;
                     document.getElementById('dropText').innerText = `✅ Listing Dispatched to Staff`;
-                    submitBtn.innerText = "✅ Submitted Successfully";
+                    submitBtn.innerText = "✅ SUBMITTED SUCCESSFULLY";
+                    submitBtn.classList.remove('ready');
+                    submitBtn.classList.add('success-btn'); // خلفية خضراء وتأثير النبض المتحرك
                 } else {
-                    status.innerText = "❌ Failed: " + (json.error || "Unknown error");
+                    status.innerHTML = `<span class="error-msg">❌ Failed: ${json.error || "Unknown error"}</span>`;
                     submitBtn.disabled = false;
                     submitBtn.classList.add('ready');
                 }
             } catch (e) {
-                status.innerText = "❌ Network error. Please try again.";
+                status.innerHTML = `<span class="error-msg">❌ Network error. Please try again.</span>`;
                 submitBtn.disabled = false;
                 submitBtn.classList.add('ready');
             }
@@ -945,141 +966,149 @@ async def ping_handler(request):
 async def handle_web_page(request):
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
-# مسار الرفع الفوري في الخلفية
 async def handle_upload_images_only(request):
-    reader = await request.multipart()
-    session_id = None
-    saved_paths = []
-
-    while True:
-        part = await reader.next()
-        if part is None:
-            break
-        if part.name == "session":
-            session_id = (await part.read()).decode('utf-8')
-        elif part.name == "files":
-            filename = part.filename
-            if filename:
-                ext = os.path.splitext(filename)[1].lower()
-                clean_name = f"{uuid.uuid4().hex}{ext}"
-                file_path = os.path.join("uploaded_screenshots", clean_name)
-                with open(file_path, "wb") as f:
-                    while True:
-                        chunk = await part.read_chunk()
-                        if not chunk:
-                            break
-                        f.write(chunk)
-                saved_paths.append(file_path)
-
-    if not session_id or session_id not in active_web_sessions:
-        return web.json_response({"status": "error", "error": "Invalid or expired session"}, status=400)
-
-    # حفظ الصور مؤقتاً في الجلسة النشطة
-    active_web_sessions[session_id]["uploaded_files"].extend(saved_paths)
-    total_files = len(active_web_sessions[session_id]["uploaded_files"])
-    return web.json_response({"status": "ok", "total_uploaded": total_files})
-
-# مسار الإرسال الفوري للأدمن بدون أي Delay
-async def handle_finalize_listing(request):
-    data = await request.post()
-    session_id = data.get("session")
-    price = data.get("price", "")
-    description = data.get("description", "")
-
-    if not session_id or session_id not in active_web_sessions:
-        return web.json_response({"status": "error", "error": "Invalid or expired session"}, status=400)
-
-    session_info = active_web_sessions[session_id]
-    saved_paths = session_info.get("uploaded_files", [])
-    seller_id = session_info["seller_id"]
-    channel_id = session_info["channel_id"]
-    launcher_msg = session_info["launcher_msg"]
-
-    ticket_channel = bot.get_channel(channel_id)
-    review_channel = bot.get_channel(REVIEW_CHANNEL_ID)
-    support_role = ticket_channel.guild.get_role(SUPPORT_ROLE_ID) if ticket_channel else None
-    seller = bot.get_user(seller_id) or await bot.fetch_user(seller_id)
-
-    raw_clean_price = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
-    formatted_price = f"${raw_clean_price} USD (Paid in Crypto)"
-
-    discord_cdn_urls = []
-    batch_size = 10
-    for i in range(0, len(saved_paths), batch_size):
-        chunk = saved_paths[i:i + batch_size]
-        files_to_send = [discord.File(fp) for fp in chunk if os.path.exists(fp)]
-        if files_to_send and review_channel:
-            batch_msg = await review_channel.send(content=f"📸 *Upload Batch for {seller.mention}:*", files=files_to_send)
-            for att in batch_msg.attachments:
-                discord_cdn_urls.append(att.url)
-
-    for fp in saved_paths:
-        try:
-            if os.path.exists(fp):
-                os.remove(fp)
-        except Exception as e:
-            print(f"Error removing temp image: {e}")
-
-    admin_embed = discord.Embed(
-        title="📥 NEW VERIFIED COD ACCOUNT SUBMISSION",
-        description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
-        color=0xF59E0B,
-        timestamp=datetime.datetime.utcnow()
-    )
-    admin_embed.add_field(name="🎮 Game Title", value="WARZONE / MW4", inline=True)
-    admin_embed.add_field(name="💰 Asking Price", value=formatted_price, inline=True)
-    admin_embed.add_field(name="📝 Offer Description", value=description[:1024], inline=False)
-    admin_embed.add_field(name="📸 Screenshots Received", value=f"`{len(discord_cdn_urls)} photos verified & ready`", inline=False)
-
-    if discord_cdn_urls:
-        admin_embed.set_image(url=discord_cdn_urls[0])
-    gallery_links = "\n".join([f"• [Image {idx + 1}]({url})" for idx, url in enumerate(discord_cdn_urls[:35])])
-    admin_embed.add_field(name="🖼️ Proof Gallery Links", value=gallery_links[:1024], inline=False)
-
-    if review_channel:
-        role_ping = support_role.mention if support_role else "@here"
-        approval_view = AdminApprovalView(
-            seller=seller,
-            embed_data=admin_embed,
-            ticket_channel=ticket_channel,
-            images=discord_cdn_urls
-        )
-        await review_channel.send(
-            content=f"🔔 {role_ping} **New CoD Account Submission! Use buttons below to flip through all {len(discord_cdn_urls)} images:**",
-            embed=admin_embed,
-            view=approval_view
-        )
-
-    submitted_embed = discord.Embed(
-        title="✅ LISTING SUBMITTED TO STAFF",
-        description=(
-            f"**Asking Price:** `{formatted_price}`\n"
-            f"**Screenshots:** `{len(discord_cdn_urls)} photos attached`\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "🎉 **Your listing details and all screenshots have been dispatched directly to Staff!**\n"
-            "Our verification team is currently inspecting your proofs. You will receive a direct notification once approved."
-        ),
-        color=0x10B981,
-        timestamp=datetime.datetime.utcnow()
-    )
     try:
-        await launcher_msg.edit(embed=submitted_embed, view=None)
-    except Exception as e:
-        print(f"Error updating launcher message: {e}")
+        reader = await request.multipart()
+        session_id = None
+        saved_paths = []
 
-    active_web_sessions.pop(session_id, None)
-    return web.json_response({"status": "ok", "count": len(discord_cdn_urls)})
+        while True:
+            part = await reader.next()
+            if part is None:
+                break
+            if part.name == "session":
+                session_id = (await part.read()).decode('utf-8')
+            elif part.name == "files":
+                filename = part.filename
+                if filename:
+                    ext = os.path.splitext(filename)[1].lower()
+                    clean_name = f"{uuid.uuid4().hex}{ext}"
+                    file_path = os.path.join("uploaded_screenshots", clean_name)
+                    with open(file_path, "wb") as f:
+                        while True:
+                            chunk = await part.read_chunk()
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                    saved_paths.append(file_path)
+
+        if not session_id:
+            return web.json_response({"status": "error", "error": "Missing session ID"}, status=400)
+
+        if session_id not in active_web_sessions:
+            return web.json_response({"status": "error", "error": "Session expired or bot restarted. Please click the button in your Discord ticket again!"}, status=400)
+
+        active_web_sessions[session_id]["uploaded_files"].extend(saved_paths)
+        total_files = len(active_web_sessions[session_id]["uploaded_files"])
+        return web.json_response({"status": "ok", "total_uploaded": total_files})
+    except Exception as e:
+        print(f"Upload error: {e}")
+        return web.json_response({"status": "error", "error": str(e)}, status=500)
+
+async def handle_finalize_listing(request):
+    try:
+        data = await request.post()
+        session_id = data.get("session")
+        price = data.get("price", "")
+        description = data.get("description", "")
+
+        if not session_id or session_id not in active_web_sessions:
+            return web.json_response({"status": "error", "error": "Session expired. Reopen from Discord."}, status=400)
+
+        session_info = active_web_sessions[session_id]
+        saved_paths = session_info.get("uploaded_files", [])
+        seller_id = session_info["seller_id"]
+        channel_id = session_info["channel_id"]
+        launcher_msg = session_info["launcher_msg"]
+
+        ticket_channel = bot.get_channel(channel_id)
+        review_channel = bot.get_channel(REVIEW_CHANNEL_ID)
+        support_role = ticket_channel.guild.get_role(SUPPORT_ROLE_ID) if ticket_channel else None
+        seller = bot.get_user(seller_id) or await bot.fetch_user(seller_id)
+
+        raw_clean_price = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
+        formatted_price = f"${raw_clean_price} USD (Paid in Crypto)"
+
+        discord_cdn_urls = []
+        batch_size = 10
+        for i in range(0, len(saved_paths), batch_size):
+            chunk = saved_paths[i:i + batch_size]
+            files_to_send = [discord.File(fp) for fp in chunk if os.path.exists(fp)]
+            if files_to_send and review_channel:
+                batch_msg = await review_channel.send(content=f"📸 *Upload Batch for {seller.mention}:*", files=files_to_send)
+                for att in batch_msg.attachments:
+                    discord_cdn_urls.append(att.url)
+
+        for fp in saved_paths:
+            try:
+                if os.path.exists(fp):
+                    os.remove(fp)
+            except Exception as e:
+                print(f"Error removing temp image: {e}")
+
+        admin_embed = discord.Embed(
+            title="📥 NEW VERIFIED COD ACCOUNT SUBMISSION",
+            description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
+            color=0xF59E0B,
+            timestamp=datetime.datetime.utcnow()
+        )
+        admin_embed.add_field(name="🎮 Game Title", value="WARZONE / MW4", inline=True)
+        admin_embed.add_field(name="💰 Asking Price", value=formatted_price, inline=True)
+        admin_embed.add_field(name="📝 Offer Description", value=description[:1024], inline=False)
+        admin_embed.add_field(name="📸 Screenshots Received", value=f"`{len(discord_cdn_urls)} photos verified & ready`", inline=False)
+
+        if discord_cdn_urls:
+            admin_embed.set_image(url=discord_cdn_urls[0])
+        gallery_links = "\n".join([f"• [Image {idx + 1}]({url})" for idx, url in enumerate(discord_cdn_urls[:35])])
+        admin_embed.add_field(name="🖼️ Proof Gallery Links", value=gallery_links[:1024], inline=False)
+
+        if review_channel:
+            role_ping = support_role.mention if support_role else "@here"
+            approval_view = AdminApprovalView(
+                seller=seller,
+                embed_data=admin_embed,
+                ticket_channel=ticket_channel,
+                images=discord_cdn_urls
+            )
+            await review_channel.send(
+                content=f"🔔 {role_ping} **New CoD Account Submission! Use buttons below to flip through all {len(discord_cdn_urls)} images:**",
+                embed=admin_embed,
+                view=approval_view
+            )
+
+        submitted_embed = discord.Embed(
+            title="✅ LISTING SUBMITTED TO STAFF",
+            description=(
+                f"**Asking Price:** `{formatted_price}`\n"
+                f"**Screenshots:** `{len(discord_cdn_urls)} photos attached`\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "🎉 **Your listing details and all screenshots have been dispatched directly to Staff!**\n"
+                "Our verification team is currently inspecting your proofs. You will receive a direct notification once approved."
+            ),
+            color=0x10B981,
+            timestamp=datetime.datetime.utcnow()
+        )
+        try:
+            await launcher_msg.edit(embed=submitted_embed, view=None)
+        except Exception as e:
+            print(f"Error updating launcher message: {e}")
+
+        active_web_sessions.pop(session_id, None)
+        return web.json_response({"status": "ok", "count": len(discord_cdn_urls)})
+    except Exception as e:
+        print(f"Finalize error: {e}")
+        return web.json_response({"status": "error", "error": str(e)}, status=500)
 
 async def session_cleaner_task():
     while True:
         await asyncio.sleep(300)
         now = datetime.datetime.utcnow()
-        expired = [sid for sid, data in active_web_sessions.items() if (now - data["created_at"]).total_seconds() > 1800]
+        expired = [sid for sid, data in active_web_sessions.items() if (now - data["created_at"]).total_seconds() > 3600]
         for sid in expired:
             active_web_sessions.pop(sid, None)
 
 async def start_web_server():
-    app = web.Application(client_max_size=100 * 1024 * 1024)
+    app = web.Application(client_max_size=300 * 1024 * 1024)
     app.router.add_get("/", ping_handler)
     app.router.add_get("/upload", handle_web_page)
     app.router.add_post("/api/upload_images_only", handle_upload_images_only)
