@@ -402,7 +402,6 @@ class AdminApprovalView(View):
         await interaction.response.defer()
         market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
         
-        # تصميم Embed فخم ومرتب تماماً يشبه المتاجر الاحترافية الكبرى
         self.embed_data.title = f"⚡ {self.offer_title}"
         self.embed_data.color = 0xF59E0B
         self.embed_data.clear_fields()
@@ -864,7 +863,7 @@ async def handle_finalize_listing(request):
                 price = (await part.read()).decode('utf-8')
             elif part.name == "description":
                 description = (await part.read()).decode('utf-8')
-            elif part.name, part.name == "primaryIndex", "primaryIndex":
+            elif part.name == "primaryIndex":
                 val = (await part.read()).decode('utf-8')
                 primary_index = int(val) if val.isdigit() else 0
             elif part.name == "files":
@@ -1033,7 +1032,7 @@ async def testwelcome(ctx):
     if not channel:
         return await ctx.send("❌ Welcome channel not found.")
     embed = build_welcome_embed(ctx.author, ctx.guild)
-    await channel.send(content=f"👋 Welcome to the server, {ctx.author.mention}!", embed=embed)
+    await channel.send(content=f"👋 Welcome to the server, {ctx.author.mention}! *(Test Preview)*", embed=embed)
     await ctx.send(f"✅ Welcome message sent successfully to {channel.mention}!")
 
 @bot.command()
@@ -1062,7 +1061,7 @@ async def pay(ctx):
 async def complete(ctx):
     await ctx.message.delete()
     current_channel = ctx.channel
-    if not current_channel.name.style.startswith("✅") if hasattr(current_channel.name, 'style') else not current_channel.name.startswith("✅"):
+    if not current_channel.name.startswith("✅"):
         clean_name = current_channel.name.replace("🎫・", "").replace("🏷️・", "").replace("🛒・", "")
         new_name = f"✅・{clean_name}"
         await current_channel.edit(name=new_name)
@@ -1080,7 +1079,7 @@ async def complete(ctx):
     )
     embed.set_footer(text="Pedrao22k. | Fast • Secure • Competitive")
     view = FeedbackView()
-    view.add_item(Button(label="CloseTicket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket_btn"))
+    view.add_item(Button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket_btn"))
     await ctx.send(embed=embed, view=view)
 
 @bot.command()
@@ -1111,7 +1110,7 @@ async def setup_ticket(ctx):
 async def setup_market(ctx):
     await ctx.message.delete()
     embed = discord.Embed(
-        title="⚡ PEDRAO22K. | SESLER SUBMISSION PORTAL",
+        title="⚡ PEDRAO22K. | SELLER SUBMISSION PORTAL",
         description=(
             "Want to list your personal Call of Duty / Warzone account for sale in our verified marketplace?\n\n"
             "### 📋 How it works:\n"
