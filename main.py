@@ -327,14 +327,14 @@ class MarketplaceCarouselView(View):
             overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
 
         buy_ticket_channel = await guild.create_text_channel(name=channel_name, category=category, overwrites=overwrites)
-        price_field = next((f.value for f in self.embed_data.fields if f.name == "💰 Asking Price"), "Check listing")
+        price_field = next((f.value for f in self.embed_data.fields if "Asking Price" in f.name), "Check listing")
 
         buy_embed = discord.Embed(
             title="🛒 ACCOUNT PURCHASE ORDER",
             description=(
                 f"Welcome {interaction.user.mention}!\n"
                 "You opened this ticket to purchase this verified Call of Duty account:\n\n"
-                f"💰 **Price:** `{price_field}`\n\n"
+                f"💰 **Price:** {price_field}\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "💳 **Payment Methods:** `Crypto Only` (USDT / LTC / BTC)\n"
                 "⚡ Type `!pay` to view our official payment addresses.\n"
@@ -352,7 +352,7 @@ class MarketplaceCarouselView(View):
         await interaction.response.send_message(f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}", ephemeral=True)
 
 class AdminApprovalView(View):
-    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = ""):
+    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", description: str = "", count_str: str = ""):
         super().__init__(timeout=None)
         self.seller = seller
         self.embed_data = embed_data
@@ -360,7 +360,8 @@ class AdminApprovalView(View):
         self.images = images
         self.launcher_msg = launcher_msg
         self.offer_title = offer_title
-        self.price_str = price_str
+        self.price_num = price_num
+        self.description = description
         self.count_str = count_str
         self.current_index = 0
         self.posted_market_message = None
@@ -402,16 +403,25 @@ class AdminApprovalView(View):
         await interaction.response.defer()
         market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
         
-        self.embed_data.title = f"⚡ {self.offer_title}"
-        self.embed_data.color = 0xF59E0B
-        self.embed_data.clear_fields()
-        self.embed_data.add_field(name="💰 Asking Price", value=f"`{self.price_str}`", inline=False)
-        self.embed_data.add_field(name="📋 Account Details & Description", value=self.embed_data.description or "No description provided.", inline=False)
-        self.embed_data.set_footer(text="Pedrao22k. | Verified Store • Click 'Buy This Account' below to purchase securely!")
-
-        thread_title = f"{self.price_str} • {self.offer_title}"
+        # الطريقة الأولى: بناء عنوان بوست فخم وبسيط يجذب العين فوراً
+        thread_title = f"⚡ [${self.price_num} USD] • {self.offer_title}"
         if len(thread_title) > 95:
             thread_title = thread_title[:95]
+
+        # بناء Embed منسق باحترافية تامة كالمتاجر الكبرى
+        pro_market_embed = discord.Embed(
+            title=f"⚡ {self.offer_title.upper()}",
+            description="```yaml\nSTATUS: VERIFIED & AVAILABLE FOR PURCHASE\nESCROW: 100% SECURE VIA ADMIN TRANSFER```",
+            color=0xF59E0B,
+            timestamp=datetime.datetime.utcnow()
+        )
+        pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`${self.price_num} USD`** *(Crypto Payment)*", inline=True)
+        pro_market_embed.add_field(name="🎮 Game / Category", value="> **`Call of Duty: Warzone / MW3`**", inline=True)
+        pro_market_embed.add_field(name="📋 Account Details & Summary", value=f"```{self.description}```", inline=False)
+        pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to open order")
+
+        if self.images:
+            pro_market_embed.set_image(url=self.images[0])
 
         available_tag = None
         if hasattr(market_channel, 'available_tags'):
@@ -423,23 +433,18 @@ class AdminApprovalView(View):
         applied_tags = [available_tag] if available_tag else []
 
         if market_channel and isinstance(market_channel, discord.ForumChannel):
-            if self.images:
-                self.embed_data.set_image(url=self.images[0])
-            market_view = MarketplaceCarouselView(images=self.images, embed_data=self.embed_data, is_sold=False)
-            
+            market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
             thread_with_message = await market_channel.create_thread(
                 name=thread_title,
-                embed=self.embed_data,
+                embed=pro_market_embed,
                 view=market_view,
                 applied_tags=applied_tags
             )
             self.posted_market_message = thread_with_message.message
             self.created_thread = thread_with_message.thread
         else:
-            if self.images:
-                self.embed_data.set_image(url=self.images[0])
-            market_view = MarketplaceCarouselView(images=self.images, embed_data=self.embed_data, is_sold=False)
-            self.posted_market_message = await market_channel.send(embed=self.embed_data, view=market_view)
+            market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
+            self.posted_market_message = await market_channel.send(embed=pro_market_embed, view=market_view)
             self.created_thread = None
 
         button.disabled = True
@@ -458,7 +463,7 @@ class AdminApprovalView(View):
                         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         "### 📋 LISTING DETAILS:\n"
                         f"> 🏷️ **Offer Title:** `{self.offer_title}`\n"
-                        f"> 💰 **Asking Price:** `{self.price_str}`\n"
+                        f"> 💰 **Asking Price:** `${self.price_num} USD`\n"
                         f"> 📸 **Screenshots:** `{self.count_str}`\n"
                         "> ✅ **Current Status:** `Live in Marketplace`\n"
                         f"> 🔗 **Listing URL:** [Click to View on Market]({market_link})\n\n"
@@ -483,20 +488,6 @@ class AdminApprovalView(View):
         except:
             pass
 
-        try:
-            dm_embed = discord.Embed(
-                title="🎉 YOUR COD ACCOUNT IS NOW LIVE ON MARKETPLACE!",
-                description=(
-                    "Your listing has been verified and published by Pedrao22k Staff.\n\n"
-                    f"🔗 **View your listing:** [Click Here]({market_link})\n\n"
-                    "We will notify you immediately once a buyer opens an escrow purchase ticket!"
-                ),
-                color=0x10B981
-            )
-            await self.seller.send(embed=dm_embed)
-        except:
-            pass
-
     @discord.ui.button(label="Reject Listing", style=discord.ButtonStyle.danger, emoji="❌", row=1)
     async def reject(self, interaction: discord.Interaction, button: Button):
         modal = RejectReasonModal(
@@ -504,7 +495,7 @@ class AdminApprovalView(View):
             ticket_channel=self.ticket_channel,
             launcher_msg=self.launcher_msg,
             offer_title=self.offer_title,
-            price_str=self.price_str,
+            price_str=f"${self.price_num} USD",
             count_str=self.count_str
         )
         await interaction.response.send_modal(modal)
@@ -516,7 +507,7 @@ class AdminApprovalView(View):
     async def sold_btn(self, interaction: discord.Interaction, button: Button):
         if self.posted_market_message:
             sold_embed = self.posted_market_message.embeds[0]
-            sold_embed.title = f"🔴 [SOLD OUT] {self.offer_title}"
+            sold_embed.title = f"🔴 [SOLD OUT] {self.offer_title.upper()}"
             sold_embed.color = 0x475569
             sold_embed.set_footer(text="Pedrao22k. | 🔒 This account has been successfully sold.")
 
@@ -897,8 +888,7 @@ async def handle_finalize_listing(request):
         support_role = ticket_channel.guild.get_role(SUPPORT_ROLE_ID) if ticket_channel else None
         seller = bot.get_user(seller_id) or await bot.fetch_user(seller_id)
 
-        raw_clean_price = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
-        formatted_price = f"${raw_clean_price} USD (Paid in Crypto)"
+        clean_price_num = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
 
         discord_cdn_urls = []
         for fp in saved_paths:
@@ -916,7 +906,7 @@ async def handle_finalize_listing(request):
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "### 📋 SUBMISSION OVERVIEW:\n"
                 f"> 🏷️ **Offer Title:** `{offer_title}`\n"
-                f"> 💰 **Asking Price:** `{formatted_price}`\n"
+                f"> 💰 **Asking Price:** `${clean_price_num} USD`\n"
                 f"> 📸 **Screenshots Verified:** `{len(discord_cdn_urls)} proofs uploaded`\n"
                 "> ⏳ **Current Status:** `Pending Admin Verification`"
             ),
@@ -939,7 +929,7 @@ async def handle_finalize_listing(request):
             color=0xF59E0B,
             timestamp=datetime.datetime.utcnow()
         )
-        admin_embed.add_field(name="💰 Asking Price", value=formatted_price, inline=False)
+        admin_embed.add_field(name="💰 Asking Price", value=f"${clean_price_num} USD", inline=False)
         admin_embed.add_field(name="📋 Account Details", value=description[:1024], inline=False)
         if discord_cdn_urls:
             admin_embed.set_image(url=discord_cdn_urls[0])
@@ -953,7 +943,8 @@ async def handle_finalize_listing(request):
                 images=discord_cdn_urls,
                 launcher_msg=launcher_msg,
                 offer_title=offer_title,
-                price_str=formatted_price,
+                price_num=clean_price_num,
+                description=description,
                 count_str=f"{len(discord_cdn_urls)} proofs"
             )
             await review_channel.send(
@@ -1032,7 +1023,7 @@ async def testwelcome(ctx):
     if not channel:
         return await ctx.send("❌ Welcome channel not found.")
     embed = build_welcome_embed(ctx.author, ctx.guild)
-    await channel.send(content=f"👋 Welcome to the server, {ctx.author.mention}! *(Test Preview)*", embed=embed)
+    await channel.send(content=f"👋 Welcome to the server, {ctx.author.mention}!", embed=embed)
     await ctx.send(f"✅ Welcome message sent successfully to {channel.mention}!")
 
 @bot.command()
