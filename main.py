@@ -209,10 +209,13 @@ class TicketLauncherView(View):
 
 # ======================== نافذة سبب الرفض ========================
 class RejectReasonModal(Modal, title="Listing Rejection Reason"):
-    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel):
+    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, price_str: str = "", count_str: str = ""):
         super().__init__()
         self.seller = seller
         self.ticket_channel = ticket_channel
+        self.launcher_msg = launcher_msg
+        self.price_str = price_str
+        self.count_str = count_str
         self.reason_input = TextInput(
             label="Reason for Declining",
             style=discord.TextStyle.paragraph,
@@ -226,8 +229,38 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
         reason = self.reason_input.value.strip()
         await interaction.response.send_message(f"✅ Rejection sent to seller: `{reason}`", ephemeral=True)
 
+        # تحديث بطاقة التذكرة مباشرة إلى الرفض
+        if self.launcher_msg:
+            try:
+                rejected_embed = discord.Embed(
+                    title="❌ LISTING SUBMISSION DECLINED BY STAFF",
+                    description=(
+                        f"Hello {self.seller.mention}, your submitted Call of Duty account listing has been inspected and **declined** by moderation.\n\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "### 📋 SUBMISSION DETAILS:\n"
+                        f"> 💰 **Asking Price:** `{self.price_str}`\n"
+                        f"> 📸 **Screenshots:** `{self.count_str}`\n"
+                        "> ❌ **Current Status:** `Rejected / Action Required`\n\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "### 📝 REASON FOR REJECTION:\n"
+                        f"> ⚠️ **`{reason}`**\n\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "🛠️ **WHAT YOU CAN DO:**\n"
+                        "• Please re-read our safety rules (strictly no gamer tags, nicknames, or watermarks).\n"
+                        "• Contact staff in this ticket if you have any questions or want to submit new valid proofs."
+                    ),
+                    color=0xEF4444,
+                    timestamp=datetime.datetime.utcnow()
+                )
+                if self.seller.display_avatar:
+                    rejected_embed.set_thumbnail(url=self.seller.display_avatar.url)
+                rejected_embed.set_footer(text="Pedrao22k Services • Moderation Decision")
+                await self.launcher_msg.edit(embed=rejected_embed, view=None)
+            except Exception as e:
+                print(f"Error editing launcher to rejected: {e}")
+
         try:
-            await self.ticket_channel.send(f"❌ **Your listing submission was declined by staff.**\n📝 **Reason:** {reason}")
+            await self.ticket_channel.send(f"⚠️ {self.seller.mention} **Your listing was declined.** Reason: `{reason}`")
         except:
             pass
 
@@ -341,12 +374,15 @@ class MarketplaceCarouselView(View):
 
 # ======================== واجهة الإدارة ========================
 class AdminApprovalView(View):
-    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list):
+    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, price_str: str = "", count_str: str = ""):
         super().__init__(timeout=None)
         self.seller = seller
         self.embed_data = embed_data
         self.ticket_channel = ticket_channel
         self.images = images
+        self.launcher_msg = launcher_msg
+        self.price_str = price_str
+        self.count_str = count_str
         self.current_index = 0
         self.posted_market_message = None
         self.update_carousel()
@@ -400,13 +436,43 @@ class AdminApprovalView(View):
         self.sold_btn.disabled = False
         await interaction.response.edit_message(content="✅ **Listing Published to Marketplace! Click 'Mark as SOLD' below when completed.**", view=self)
         
+        market_link = self.posted_market_message.jump_url if self.posted_market_message else "#accounts-for-sale"
+
+        # تحديث بطاقة التذكرة مباشرة إلى الموافقة المكتملة
+        if self.launcher_msg:
+            try:
+                approved_embed = discord.Embed(
+                    title="🎉 LISTING APPROVED & PUBLISHED ON MARKETPLACE",
+                    description=(
+                        f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** to our marketplace.\n\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "### 📋 LISTING DETAILS:\n"
+                        f"> 💰 **Asking Price:** `{self.price_str}`\n"
+                        f"> 📸 **Screenshots:** `{self.count_str}`\n"
+                        "> ✅ **Current Status:** `Live in Marketplace`\n"
+                        f"> 🔗 **Listing URL:** [Click to View on Market]({market_link})\n\n"
+                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                        "### 🛡️ NEXT ESCROW STEPS:\n"
+                        "1️⃣ Your account is now visible to all buyers in <#1552628139618734170>.\n"
+                        "2️⃣ When a buyer opens a purchase order, an admin will ping you right here.\n"
+                        "3️⃣ Never transfer credentials outside of this ticket under any circumstances."
+                    ),
+                    color=0x10B981,
+                    timestamp=datetime.datetime.utcnow()
+                )
+                if self.seller.display_avatar:
+                    approved_embed.set_thumbnail(url=self.seller.display_avatar.url)
+                approved_embed.set_footer(text="Pedrao22k Services • Listing Live")
+                await self.launcher_msg.edit(embed=approved_embed, view=None)
+            except Exception as e:
+                print(f"Error editing launcher to approved: {e}")
+
         try:
-            await self.ticket_channel.send("🎉 **Congratulations! Staff has verified all details and published your listing in the marketplace!**")
+            await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your listing is now live!** Check it here: {market_link}")
         except:
             pass
 
         try:
-            market_link = self.posted_market_message.jump_url if self.posted_market_message else ""
             dm_embed = discord.Embed(
                 title="🎉 YOUR COD ACCOUNT IS NOW LIVE ON MARKETPLACE!",
                 description=(
@@ -422,7 +488,14 @@ class AdminApprovalView(View):
 
     @discord.ui.button(label="Reject Listing", style=discord.ButtonStyle.danger, emoji="❌", row=1)
     async def reject(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_modal(RejectReasonModal(seller=self.seller, ticket_channel=self.ticket_channel))
+        modal = RejectReasonModal(
+            seller=self.seller,
+            ticket_channel=self.ticket_channel,
+            launcher_msg=self.launcher_msg,
+            price_str=self.price_str,
+            count_str=self.count_str
+        )
+        await interaction.response.send_modal(modal)
         for item in self.children:
             item.disabled = True
         await interaction.message.edit(content="❌ **Listing was rejected by staff.**", view=self)
@@ -1029,6 +1102,7 @@ async def handle_finalize_listing(request):
 
         raw_clean_price = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
         formatted_price = f"${raw_clean_price} USD (Paid in Crypto)"
+        count_str = f"{len(saved_paths)} proofs attached"
 
         discord_cdn_urls = []
         batch_size = 10
@@ -1047,6 +1121,39 @@ async def handle_finalize_listing(request):
             except Exception as e:
                 print(f"Error removing temp image: {e}")
 
+        # بطاقة تأكيد أنيقة في تذكرة البائع أثناء انتظار الإدارة
+        submitted_embed = discord.Embed(
+            title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
+            description=(
+                f"Thank you {seller.mention}! Your Call of Duty account listing has been securely recorded and dispatched to our moderation queue.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "### 📋 SUBMISSION OVERVIEW:\n"
+                f"> 💰 **Asking Price:** `{formatted_price}`\n"
+                f"> 📸 **Screenshots Verified:** `{len(discord_cdn_urls)} proofs uploaded`\n"
+                "> ⏳ **Current Status:** `Pending Admin Verification`\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "### 📌 WHAT HAPPENS NEXT?\n"
+                "1️⃣ **Inspection:** Staff is inspecting all screenshots for compliance with safety rules.\n"
+                "2️⃣ **Marketplace Release:** Once approved, your listing will be published directly to <#1552628139618734170>.\n"
+                "3️⃣ **Direct Alert:** You will receive a direct notification the second a buyer opens an escrow deal.\n\n"
+                "⚠️ **IMPORTANT NOTICE:**\n"
+                "**PLEASE WAIT PATIENTLY FOR THE ADMIN TO APPROVE YOUR OFFER!**\n"
+                "This card will automatically update once staff makes a decision."
+            ),
+            color=0xF59E0B,
+            timestamp=datetime.datetime.utcnow()
+        )
+        if seller.display_avatar:
+            submitted_embed.set_thumbnail(url=seller.display_avatar.url)
+        submitted_embed.set_footer(text="Pedrao22k Services • Awaiting Review")
+
+        try:
+            await launcher_msg.edit(embed=submitted_embed, view=None)
+            await ticket_channel.send(f"🔔 {seller.mention} **Your offer was submitted! Please wait for staff review.** ⏳")
+        except Exception as e:
+            print(f"Error updating launcher message: {e}")
+
+        # إرسال الطلب لغرفة مراجعة الإدارة مع ربط رسالة التذكرة بها لتعديلها لاحقاً
         admin_embed = discord.Embed(
             title="📥 NEW VERIFIED COD ACCOUNT SUBMISSION",
             description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
@@ -1069,47 +1176,16 @@ async def handle_finalize_listing(request):
                 seller=seller,
                 embed_data=admin_embed,
                 ticket_channel=ticket_channel,
-                images=discord_cdn_urls
+                images=discord_cdn_urls,
+                launcher_msg=launcher_msg,
+                price_str=formatted_price,
+                count_str=f"{len(discord_cdn_urls)} proofs"
             )
             await review_channel.send(
                 content=f"🔔 {role_ping} **New CoD Account Submission! Use buttons below to flip through all {len(discord_cdn_urls)} images:**",
                 embed=admin_embed,
                 view=approval_view
             )
-
-        # بطاقة تأكيد فخمة واحترافية للبائع في التذكرة
-        submitted_embed = discord.Embed(
-            title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
-            description=(
-                f"Thank you {seller.mention}! Your Call of Duty account listing has been securely recorded and dispatched to our moderation queue.\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "### 📋 SUBMISSION OVERVIEW:\n"
-                f"> 💰 **Asking Price:** `{formatted_price}`\n"
-                f"> 📸 **Screenshots Verified:** `{len(discord_cdn_urls)} proofs uploaded`\n"
-                "> ⏳ **Current Status:** `Pending Admin Verification`\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "### 📌 WHAT HAPPENS NEXT?\n"
-                "1️⃣ **Inspection:** Staff is currently verifying that all screenshots follow our safety guidelines (no nicknames or personal handles).\n"
-                "2️⃣ **Marketplace Release:** Once approved, your account will be immediately featured on <#1552628139618734170>.\n"
-                "3️⃣ **Direct Alert:** You will receive a direct notification the second a buyer opens an escrow deal.\n\n"
-                "⚠️ **IMPORTANT NOTICE:**\n"
-                "**PLEASE WAIT PATIENTLY FOR THE ADMIN TO APPROVE YOUR OFFER!**\n"
-                "Do not create duplicate tickets or spam staff. You will be updated here shortly."
-            ),
-            color=0x10B981,
-            timestamp=datetime.datetime.utcnow()
-        )
-        if seller.display_avatar:
-            submitted_embed.set_thumbnail(url=seller.display_avatar.url)
-        submitted_embed.set_footer(text="Pedrao22k Services • Secure Escrow & Fast Response")
-
-        try:
-            # تعديل رسالة الزر لتصبح البطاقة الاحترافية
-            await launcher_msg.edit(embed=submitted_embed, view=None)
-            # منشن إضافي لضمان تنبيه البائع
-            await ticket_channel.send(f"🔔 {seller.mention} **Your offer was submitted! Please wait for staff review.** ⏳")
-        except Exception as e:
-            print(f"Error updating launcher message: {e}")
 
         active_web_sessions.pop(session_id, None)
         return web.json_response({"status": "ok", "count": len(discord_cdn_urls)})
