@@ -650,6 +650,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 inset 0 1px 0 rgba(255, 255, 255, 0.1);
             position: relative;
             z-index: 1;
+            transition: all 0.4s ease;
         }
         .container::before {
             content: '';
@@ -776,7 +777,6 @@ HTML_PAGE = """<!DOCTYPE html>
             box-shadow: 0 0 12px rgba(255, 184, 0, 0.6);
         }
 
-        /* أنيميشن إعادة تحميل شريط التقدم عند إرسال البيانات للديسكورد */
         .progress-bar-fill.reloading {
             width: 100% !important;
             background: linear-gradient(90deg, #D97706, #FFB800, #F59E0B, #D97706);
@@ -820,23 +820,64 @@ HTML_PAGE = """<!DOCTYPE html>
             transform: translateY(-2px);
         }
 
-        .btn.success-btn {
-            background: linear-gradient(135deg, #10B981 0%, #059669 100%) !important;
-            color: #FFFFFF !important;
-            cursor: default !important;
-            box-shadow: 0 4px 20px rgba(16, 185, 129, 0.5) !important;
-            animation: pulse-success 1.5s infinite alternate ease-in-out;
+        /* تنسيق شاشة النجاح المخصصة بعد الإرسال */
+        .success-screen {
+            display: none;
+            text-align: center;
+            padding: 10px 4px;
+            animation: fadeIn 0.4s ease;
         }
-
-        @keyframes pulse-success {
-            0% {
-                transform: scale(1);
-                box-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
-            }
-            100% {
-                transform: scale(1.02);
-                box-shadow: 0 0 25px rgba(16, 185, 129, 0.85);
-            }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .success-icon {
+            font-size: 60px;
+            margin-bottom: 12px;
+            filter: drop-shadow(0 0 20px rgba(16, 185, 129, 0.8));
+            animation: pulse-glow-success 2s infinite alternate ease-in-out;
+        }
+        @keyframes pulse-glow-success {
+            0% { transform: scale(1); }
+            100% { transform: scale(1.1); }
+        }
+        .success-title {
+            color: #10B981;
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            text-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
+        }
+        .success-desc {
+            color: #E2E8F0;
+            font-size: 15px;
+            line-height: 1.6;
+            margin-bottom: 24px;
+            background: rgba(22, 23, 31, 0.7);
+            border: 1px solid rgba(245, 158, 11, 0.25);
+            border-radius: 12px;
+            padding: 18px 16px;
+        }
+        .success-desc strong {
+            color: #FFB800;
+        }
+        .discord-btn {
+            background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%);
+            color: #FFFFFF;
+            padding: 14px 28px;
+            border-radius: 10px;
+            font-weight: 800;
+            text-transform: uppercase;
+            text-decoration: none;
+            display: inline-block;
+            box-shadow: 0 4px 20px rgba(88, 101, 242, 0.4);
+            transition: all 0.25s ease;
+            letter-spacing: 0.6px;
+        }
+        .discord-btn:hover {
+            box-shadow: 0 6px 28px rgba(88, 101, 242, 0.7);
+            transform: translateY(-2px);
         }
 
         #status { 
@@ -851,10 +892,6 @@ HTML_PAGE = """<!DOCTYPE html>
             font-weight: 700;
             font-size: 13px;
         }
-        .success { 
-            color: #10B981 !important; 
-            font-weight: bold; 
-        }
         .error-msg {
             color: #EF4444 !important;
             font-weight: bold;
@@ -862,39 +899,54 @@ HTML_PAGE = """<!DOCTYPE html>
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header-logo">
-            <span class="lightning">⚡</span>
-        </div>
-        <h2>PEDRAO22K <span>SELLER PORTAL</span></h2>
-        <div class="subtitle">Submit your account listing & upload unlimited proof screenshots in one click.</div>
-
-        <label for="price">Asking Price ($ USD)</label>
-        <input type="text" id="price" placeholder="e.g. 150 (Paid in Crypto equivalent)" required>
-
-        <label for="desc">Offer Description</label>
-        <textarea id="desc" rows="4" placeholder="Detail your account: mastery camos, levels, rank, skins, CP, access details. No personal contacts." required></textarea>
-
-        <label>Account Screenshots (Unlimited Proofs)</label>
-        <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
-            <div class="cloud-icon">⚡</div>
-            <div id="dropText" style="font-weight: 700; font-size: 15px; color: #FFFFFF;">Click or Drag & Drop Images Here</div>
-            <div id="dropSub" style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
-        </div>
-
-        <div class="progress-box" id="progressBox">
-            <div class="progress-header">
-                <span id="progressText">Uploading Screenshots...</span>
-                <span id="progressPercent" style="color: #FFB800;">0%</span>
+    <div class="container" id="mainContainer">
+        <!-- شاشة نموذج الإدخال -->
+        <div id="formScreen">
+            <div class="header-logo">
+                <span class="lightning">⚡</span>
             </div>
-            <div class="progress-bar-bg">
-                <div class="progress-bar-fill" id="progressBarFill"></div>
+            <h2>PEDRAO22K <span>SELLER PORTAL</span></h2>
+            <div class="subtitle">Submit your account listing & upload unlimited proof screenshots in one click.</div>
+
+            <label for="price">Asking Price ($ USD)</label>
+            <input type="text" id="price" placeholder="e.g. 150 (Paid in Crypto equivalent)" required>
+
+            <label for="desc">Offer Description</label>
+            <textarea id="desc" rows="4" placeholder="Detail your account: mastery camos, levels, rank, skins, CP, access details. No personal contacts." required></textarea>
+
+            <label>Account Screenshots (Unlimited Proofs)</label>
+            <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
+                <div class="cloud-icon">⚡</div>
+                <div id="dropText" style="font-weight: 700; font-size: 15px; color: #FFFFFF;">Click or Drag & Drop Images Here</div>
+                <div id="dropSub" style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
             </div>
+
+            <div class="progress-box" id="progressBox">
+                <div class="progress-header">
+                    <span id="progressText">Uploading Screenshots...</span>
+                    <span id="progressPercent" style="color: #FFB800;">0%</span>
+                </div>
+                <div class="progress-bar-bg">
+                    <div class="progress-bar-fill" id="progressBarFill"></div>
+                </div>
+            </div>
+
+            <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFileSelection(this.files)">
+            <button id="submitBtn" class="btn" disabled onclick="submitFinalListing()">🚀 Submit Listing to Staff</button>
+            <div id="status">Select screenshots to begin instant upload.</div>
         </div>
 
-        <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFileSelection(this.files)">
-        <button id="submitBtn" class="btn" disabled onclick="submitFinalListing()">🚀 Submit Listing to Staff</button>
-        <div id="status">Select screenshots to begin instant upload.</div>
+        <!-- شاشة النجاح والتأكيد المخصصة بعد الإرسال -->
+        <div class="success-screen" id="successScreen">
+            <div class="success-icon">🎉</div>
+            <div class="success-title">YOUR OFFER IS UNDER REVIEW!</div>
+            <div class="success-desc">
+                Your account details and proof screenshots have been securely received.<br><br>
+                <strong>👉 Please wait for the admin to approve your offer.</strong><br>
+                No further action is required from you here. We will notify you inside your Discord ticket once reviewed!
+            </div>
+            <a href="https://discord.com/channels/@me" class="discord-btn" onclick="window.close()">Return to Discord</a>
+        </div>
     </div>
 
     <script>
@@ -949,7 +1001,6 @@ HTML_PAGE = """<!DOCTYPE html>
             isUploaded = false;
             submitBtn.disabled = true;
             submitBtn.classList.remove('ready');
-            submitBtn.classList.remove('success-btn');
             submitBtn.innerText = "⏳ Uploading Screenshots...";
 
             progressBox.style.display = "block";
@@ -993,7 +1044,7 @@ HTML_PAGE = """<!DOCTYPE html>
                         submitBtn.disabled = false;
                         submitBtn.classList.add('ready');
                         submitBtn.innerText = "🚀 Submit Listing to Staff";
-                        status.innerHTML = `<span class="success">✨ ${uploadedCount} photo(s) ready! Click submit to dispatch.</span>`;
+                        status.innerHTML = `<span class="notice-wait">✨ ${uploadedCount} photo(s) ready! Click submit to dispatch.</span>`;
                     } else {
                         status.innerHTML = `<span class="error-msg">❌ Error: ${res.error || "Session expired. Please reopen from Discord."}</span>`;
                         submitBtn.innerText = "❌ Upload Failed";
@@ -1010,7 +1061,6 @@ HTML_PAGE = """<!DOCTYPE html>
             xhr.send(formData);
         }
 
-        // إرسال البيانات للديسكورد مع شريط التحميل المستمر والتنبيه المطلوب
         async function submitFinalListing() {
             const price = document.getElementById('price').value.trim();
             const desc = document.getElementById('desc').value.trim();
@@ -1019,18 +1069,16 @@ HTML_PAGE = """<!DOCTYPE html>
             if (!desc) { alert("Please provide an account description."); return; }
             if (!isUploaded || uploadedCount === 0) { alert("Please wait for screenshots to finish uploading."); return; }
 
-            // 1. قفل الزر وتغيير حالته
+            // 1. قفل الزر وتفعيل شريط التحميل المستمر
             submitBtn.disabled = true;
             submitBtn.classList.remove('ready');
             submitBtn.innerText = "⏳ Processing...";
 
-            // 2. تفعيل أنيميشن إعادة تحميل شريط التقدم بالكامل
             progressBox.style.display = "block";
             progressBarFill.classList.add('reloading');
             progressText.innerText = "⚡ Dispatched to Discord Staff...";
             progressPercent.innerText = "Processing...";
 
-            // 3. التنبيه الحرفي المطلوب من العميل
             status.innerHTML = `<span class="notice-wait">⏳ Please wait, we are completing the process, do not do anything...</span>`;
 
             const formData = new FormData();
@@ -1042,17 +1090,9 @@ HTML_PAGE = """<!DOCTYPE html>
                 const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
                 const json = await res.json();
                 if (json.status === "ok") {
-                    // اكتمال العملية بنجاح
-                    progressBarFill.classList.remove('reloading');
-                    progressBarFill.style.width = "100%";
-                    progressText.innerText = "✅ Process Completed!";
-                    progressPercent.innerText = "100%";
-
-                    status.innerHTML = `<span class="success">🎉 Dispatched Directly to Admin Review! You can return to Discord.</span>`;
-                    document.getElementById('dropText').innerText = `✅ Listing Dispatched to Staff`;
-                    submitBtn.innerText = "✅ SUBMITTED SUCCESSFULLY";
-                    submitBtn.classList.remove('ready');
-                    submitBtn.classList.add('success-btn');
+                    // إخفاء النموذج بالكامل وعرض شاشة التأكيد والانتظار المخصصة
+                    document.getElementById('formScreen').style.display = 'none';
+                    document.getElementById('successScreen').style.display = 'block';
                 } else {
                     progressBarFill.classList.remove('reloading');
                     status.innerHTML = `<span class="error-msg">❌ Failed: ${json.error || "Unknown error"}</span>`;
