@@ -229,7 +229,6 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
         reason = self.reason_input.value.strip()
         await interaction.response.send_message(f"✅ Rejection sent to seller: `{reason}`", ephemeral=True)
 
-        # تحديث بطاقة التذكرة مباشرة إلى الرفض
         if self.launcher_msg:
             try:
                 rejected_embed = discord.Embed(
@@ -438,7 +437,6 @@ class AdminApprovalView(View):
         
         market_link = self.posted_market_message.jump_url if self.posted_market_message else "#accounts-for-sale"
 
-        # تحديث بطاقة التذكرة مباشرة إلى الموافقة المكتملة
         if self.launcher_msg:
             try:
                 approved_embed = discord.Embed(
@@ -767,14 +765,28 @@ HTML_PAGE = """<!DOCTYPE html>
             border-radius: 6px;
             overflow: hidden;
             border: 1px solid rgba(255, 255, 255, 0.06);
+            position: relative;
         }
         .progress-bar-fill {
             width: 0%;
             height: 100%;
             background: linear-gradient(90deg, #D97706, #FFB800);
             border-radius: 6px;
-            transition: width 0.2s ease;
+            transition: width 0.25s ease;
             box-shadow: 0 0 12px rgba(255, 184, 0, 0.6);
+        }
+
+        /* أنيميشن إعادة تحميل شريط التقدم عند إرسال البيانات للديسكورد */
+        .progress-bar-fill.reloading {
+            width: 100% !important;
+            background: linear-gradient(90deg, #D97706, #FFB800, #F59E0B, #D97706);
+            background-size: 200% 100%;
+            animation: bar-reload 1.2s infinite linear;
+            box-shadow: 0 0 18px rgba(255, 184, 0, 0.85);
+        }
+        @keyframes bar-reload {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
         }
 
         .btn {
@@ -832,6 +844,12 @@ HTML_PAGE = """<!DOCTYPE html>
             font-size: 13px; 
             text-align: center; 
             color: #94A3B8; 
+            line-height: 1.4;
+        }
+        .notice-wait {
+            color: #FFB800 !important;
+            font-weight: 700;
+            font-size: 13px;
         }
         .success { 
             color: #10B981 !important; 
@@ -935,6 +953,7 @@ HTML_PAGE = """<!DOCTYPE html>
             submitBtn.innerText = "⏳ Uploading Screenshots...";
 
             progressBox.style.display = "block";
+            progressBarFill.classList.remove('reloading');
             progressBarFill.style.width = "0%";
             progressText.innerText = `Uploading ${files.length} screenshots...`;
             progressPercent.innerText = "0%";
@@ -991,6 +1010,7 @@ HTML_PAGE = """<!DOCTYPE html>
             xhr.send(formData);
         }
 
+        // إرسال البيانات للديسكورد مع شريط التحميل المستمر والتنبيه المطلوب
         async function submitFinalListing() {
             const price = document.getElementById('price').value.trim();
             const desc = document.getElementById('desc').value.trim();
@@ -999,10 +1019,19 @@ HTML_PAGE = """<!DOCTYPE html>
             if (!desc) { alert("Please provide an account description."); return; }
             if (!isUploaded || uploadedCount === 0) { alert("Please wait for screenshots to finish uploading."); return; }
 
+            // 1. قفل الزر وتغيير حالته
             submitBtn.disabled = true;
             submitBtn.classList.remove('ready');
-            submitBtn.innerText = "⚡ Sending to Staff...";
-            status.innerText = "Dispatching directly to Admin Review...";
+            submitBtn.innerText = "⏳ Processing...";
+
+            // 2. تفعيل أنيميشن إعادة تحميل شريط التقدم بالكامل
+            progressBox.style.display = "block";
+            progressBarFill.classList.add('reloading');
+            progressText.innerText = "⚡ Dispatched to Discord Staff...";
+            progressPercent.innerText = "Processing...";
+
+            // 3. التنبيه الحرفي المطلوب من العميل
+            status.innerHTML = `<span class="notice-wait">⏳ Please wait, we are completing the process, do not do anything...</span>`;
 
             const formData = new FormData();
             formData.append("session", session);
@@ -1013,20 +1042,30 @@ HTML_PAGE = """<!DOCTYPE html>
                 const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
                 const json = await res.json();
                 if (json.status === "ok") {
+                    // اكتمال العملية بنجاح
+                    progressBarFill.classList.remove('reloading');
+                    progressBarFill.style.width = "100%";
+                    progressText.innerText = "✅ Process Completed!";
+                    progressPercent.innerText = "100%";
+
                     status.innerHTML = `<span class="success">🎉 Dispatched Directly to Admin Review! You can return to Discord.</span>`;
                     document.getElementById('dropText').innerText = `✅ Listing Dispatched to Staff`;
                     submitBtn.innerText = "✅ SUBMITTED SUCCESSFULLY";
                     submitBtn.classList.remove('ready');
                     submitBtn.classList.add('success-btn');
                 } else {
+                    progressBarFill.classList.remove('reloading');
                     status.innerHTML = `<span class="error-msg">❌ Failed: ${json.error || "Unknown error"}</span>`;
                     submitBtn.disabled = false;
                     submitBtn.classList.add('ready');
+                    submitBtn.innerText = "🚀 Submit Listing to Staff";
                 }
             } catch (e) {
+                progressBarFill.classList.remove('reloading');
                 status.innerHTML = `<span class="error-msg">❌ Network error. Please try again.</span>`;
                 submitBtn.disabled = false;
                 submitBtn.classList.add('ready');
+                submitBtn.innerText = "🚀 Submit Listing to Staff";
             }
         }
     </script>
@@ -1153,7 +1192,6 @@ async def handle_finalize_listing(request):
         except Exception as e:
             print(f"Error updating launcher message: {e}")
 
-        # إرسال الطلب لغرفة مراجعة الإدارة مع ربط رسالة التذكرة بها لتعديلها لاحقاً
         admin_embed = discord.Embed(
             title="📥 NEW VERIFIED COD ACCOUNT SUBMISSION",
             description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
