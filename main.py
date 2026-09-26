@@ -525,10 +525,13 @@ HTML_PAGE = """<!DOCTYPE html>
             --gold-primary: #FFB800;
             --gold-glow: #F59E0B;
             --gold-hover: #D97706;
-            --bg-dark: #08080A;
-            --card-bg: #121318;
-            --border-color: #26241D;
-            --input-bg: #1A1A22;
+            --bg-dark: #070709;
+            --card-bg: rgba(16, 17, 24, 0.85);
+            --border-color: rgba(245, 158, 11, 0.28);
+            --input-bg: rgba(22, 23, 31, 0.8);
+        }
+        * {
+            box-sizing: border-box;
         }
         body {
             background-color: var(--bg-dark);
@@ -539,19 +542,50 @@ HTML_PAGE = """<!DOCTYPE html>
             justify-content: center;
             min-height: 100vh;
             margin: 0;
-            padding: 20px;
-            background-image: radial-gradient(circle at 50% 20%, rgba(245, 158, 11, 0.08) 0%, transparent 60%);
+            padding: 24px 16px;
+            position: relative;
+            overflow-x: hidden;
+        }
+        body::before {
+            content: '';
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 700px;
+            height: 700px;
+            background: radial-gradient(circle, rgba(245, 158, 11, 0.15) 0%, rgba(217, 119, 6, 0.05) 50%, transparent 75%);
+            filter: blur(40px);
+            pointer-events: none;
+            z-index: 0;
+        }
+        body::after {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background: 
+                radial-gradient(circle at 50% 10%, rgba(255, 184, 0, 0.12) 0%, transparent 50%),
+                radial-gradient(circle at 10% 90%, rgba(245, 158, 11, 0.08) 0%, transparent 40%),
+                radial-gradient(circle at 90% 90%, rgba(217, 119, 6, 0.08) 0%, transparent 40%);
+            pointer-events: none;
+            z-index: 0;
         }
         .container {
             background: var(--card-bg);
+            backdrop-filter: blur(18px);
+            -webkit-backdrop-filter: blur(18px);
             border: 1px solid var(--border-color);
-            border-radius: 16px;
-            padding: 32px;
+            border-radius: 20px;
+            padding: 34px 28px;
             max-width: 580px;
             width: 100%;
             text-align: left;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.8), 0 0 25px rgba(245, 158, 11, 0.08);
+            box-shadow: 
+                0 25px 50px rgba(0, 0, 0, 0.9),
+                0 0 35px rgba(245, 158, 11, 0.15),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
             position: relative;
+            z-index: 1;
         }
         .container::before {
             content: '';
@@ -560,91 +594,121 @@ HTML_PAGE = """<!DOCTYPE html>
             left: 20%;
             right: 20%;
             height: 2px;
-            background: linear-gradient(90deg, transparent, var(--gold-primary), transparent);
+            background: linear-gradient(90deg, transparent, #FFB800, #F59E0B, transparent);
+            box-shadow: 0 0 15px #FFB800;
+        }
+        .header-logo {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .header-logo .lightning {
+            font-size: 34px;
+            color: var(--gold-primary);
+            filter: drop-shadow(0 0 12px rgba(255, 184, 0, 0.8));
+            animation: pulse-glow 2.5s infinite alternate ease-in-out;
+        }
+        @keyframes pulse-glow {
+            0% { transform: scale(1); filter: drop-shadow(0 0 10px rgba(255, 184, 0, 0.6)); }
+            100% { transform: scale(1.1); filter: drop-shadow(0 0 24px rgba(255, 184, 0, 1)); }
         }
         h2 { 
-            margin-top: 0; 
-            color: var(--gold-primary); 
+            margin: 0; 
+            color: #FFFFFF; 
             text-align: center; 
-            font-size: 24px;
-            letter-spacing: 0.5px;
-            text-shadow: 0 0 15px rgba(255, 184, 0, 0.4);
+            font-size: 23px;
+            font-weight: 800;
+            letter-spacing: 0.6px;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.6);
+        }
+        h2 span {
+            color: var(--gold-primary);
+            text-shadow: 0 0 20px rgba(255, 184, 0, 0.6);
         }
         .subtitle { 
             color: #94A3B8; 
             font-size: 13px; 
             text-align: center; 
-            margin-bottom: 24px; 
+            margin-top: 6px;
+            margin-bottom: 26px; 
+            line-height: 1.5;
         }
         label { 
             display: block; 
-            font-weight: 600; 
-            font-size: 13px; 
-            margin-bottom: 6px; 
+            font-weight: 700; 
+            font-size: 12px; 
+            margin-bottom: 7px; 
             color: #E2E8F0; 
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.8px;
         }
         input[type="text"], textarea {
             width: 100%;
             background: var(--input-bg);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 12px 14px;
-            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 10px;
+            padding: 13px 15px;
+            color: #FFFFFF;
             font-size: 14px;
-            box-sizing: border-box;
             margin-bottom: 18px;
             outline: none;
             transition: all 0.25s ease;
         }
         input[type="text"]:focus, textarea:focus { 
             border-color: var(--gold-primary); 
-            box-shadow: 0 0 12px rgba(255, 184, 0, 0.25);
+            background: rgba(26, 27, 36, 0.95);
+            box-shadow: 0 0 16px rgba(255, 184, 0, 0.3);
         }
         .dropzone {
-            border: 2px dashed #3D3522;
-            border-radius: 12px;
-            padding: 28px 20px;
+            border: 2px dashed rgba(245, 158, 11, 0.35);
+            border-radius: 14px;
+            padding: 26px 18px;
             cursor: pointer;
-            background: #15151C;
+            background: rgba(18, 19, 26, 0.6);
             transition: all 0.25s ease;
             text-align: center;
             margin-bottom: 22px;
+            position: relative;
         }
         .dropzone:hover, .dropzone.dragover { 
             border-color: var(--gold-primary); 
-            background: rgba(245, 158, 11, 0.05); 
-            box-shadow: inset 0 0 15px rgba(255, 184, 0, 0.1);
+            background: rgba(245, 158, 11, 0.08); 
+            box-shadow: 0 0 25px rgba(255, 184, 0, 0.2), inset 0 0 15px rgba(255, 184, 0, 0.15);
         }
         .cloud-icon { 
-            font-size: 38px; 
+            font-size: 34px; 
             margin-bottom: 6px; 
-            filter: drop-shadow(0 0 8px rgba(255, 184, 0, 0.5));
+            color: var(--gold-primary);
+            filter: drop-shadow(0 0 10px rgba(255, 184, 0, 0.7));
         }
         .btn {
             background: linear-gradient(135deg, #FFB800 0%, #D97706 100%);
-            color: #000;
-            padding: 14px 28px;
+            color: #050507;
+            padding: 15px 28px;
             border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 700;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 800;
             cursor: pointer;
             transition: all 0.25s ease;
             width: 100%;
-            box-shadow: 0 4px 15px rgba(245, 158, 11, 0.3);
+            box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4);
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
         .btn:hover { 
             background: linear-gradient(135deg, #FFC72C 0%, #F59E0B 100%);
-            box-shadow: 0 6px 20px rgba(245, 158, 11, 0.5);
-            transform: translateY(-1px);
+            box-shadow: 0 6px 25px rgba(255, 184, 0, 0.6);
+            transform: translateY(-2px);
         }
         .btn:disabled { 
-            background: #33333D; 
-            color: #71717A;
+            background: #252631; 
+            color: #64748B;
             cursor: not-allowed; 
             box-shadow: none;
             transform: none;
@@ -663,8 +727,11 @@ HTML_PAGE = """<!DOCTYPE html>
 </head>
 <body>
     <div class="container">
-        <h2>⚡ CoD Account Submission Portal</h2>
-        <div class="subtitle">Enter your account details and upload proof screenshots in one single step.</div>
+        <div class="header-logo">
+            <span class="lightning">⚡</span>
+        </div>
+        <h2>PEDRAO22K <span>SELLER PORTAL</span></h2>
+        <div class="subtitle">Submit your account listing & upload unlimited proof screenshots in one click.</div>
 
         <label for="price">Asking Price ($ USD)</label>
         <input type="text" id="price" placeholder="e.g. 150 (Paid in Crypto equivalent)" required>
@@ -675,7 +742,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <label>Account Screenshots (Unlimited Proofs)</label>
         <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
             <div class="cloud-icon">⚡</div>
-            <div id="dropText" style="font-weight: 600; font-size: 15px; color: #F1F5F9;">Click or Drag & Drop Images Here</div>
+            <div id="dropText" style="font-weight: 700; font-size: 15px; color: #FFFFFF;">Click or Drag & Drop Images Here</div>
             <div style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
         </div>
 
