@@ -592,7 +592,6 @@ class MarketplaceLauncherView(View):
             overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
 
         sell_ticket_channel = await guild.create_text_channel(name=channel_name, category=sell_category, overwrites=overwrites)
-
         session_id = str(uuid.uuid4())[:8]
 
         welcome_embed = discord.Embed(
@@ -602,11 +601,10 @@ class MarketplaceLauncherView(View):
                 "### 🌐 ALL-IN-ONE SELLER DASHBOARD:\n"
                 "Click the button below to open our web interface:\n"
                 "> 1️⃣ Fill in your **Offer Title**, **Asking Price**, and **Description**.\n"
-                "> 2️⃣ Select or Drag & Drop **all your screenshots** (No limits!).\n"
+                "> 2️⃣ Upload screenshots and click on your preferred image to set as **Cover Thumbnail**.\n"
                 "> 3️⃣ Click **Submit** — your listing will be dispatched directly to Staff!\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🔒 **Chat is locked:** Submissions are processed exclusively through the web portal.\n"
-                "⛔ **STRICT RULE:** It is forbidden for images to contain nicknames or means of communication."
+                "🔒 **Chat is locked:** Submissions are processed exclusively through the web portal."
             ),
             color=0xF59E0B
         )
@@ -620,8 +618,7 @@ class MarketplaceLauncherView(View):
             "seller_id": interaction.user.id,
             "channel_id": sell_ticket_channel.id,
             "launcher_msg": launcher_msg,
-            "created_at": datetime.datetime.utcnow(),
-            "uploaded_files": []
+            "created_at": datetime.datetime.utcnow()
         }
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -642,617 +639,154 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         * { box-sizing: border-box; }
         body {
-            background-color: var(--bg-dark);
-            color: #F8FAFC;
+            background-color: var(--bg-dark); color: #F8FAFC;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            min-height: 100vh;
-            margin: 0;
-            padding: 24px 16px;
-            position: relative;
-            overflow-x: hidden;
-            background-image: 
-                radial-gradient(circle at 50% 50%, rgba(245, 158, 11, 0.15) 0%, transparent 60%),
-                radial-gradient(circle at 20% 20%, rgba(255, 184, 0, 0.1) 0%, transparent 45%),
-                radial-gradient(circle at 80% 80%, rgba(217, 119, 6, 0.1) 0%, transparent 45%);
-        }
-        body::before {
-            content: '';
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            width: 650px;
-            height: 650px;
-            border-radius: 50%;
-            background: radial-gradient(circle, rgba(255, 184, 0, 0.18) 0%, rgba(245, 158, 11, 0.08) 50%, transparent 75%);
-            filter: blur(55px);
-            pointer-events: none;
-            z-index: 0;
+            display: flex; align-items: center; justify-content: center;
+            min-height: 100vh; margin: 0; padding: 24px 16px; position: relative;
         }
         .container {
-            background: var(--card-bg);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid var(--border-color);
-            border-radius: 20px;
-            padding: 34px 28px;
-            max-width: 580px;
-            width: 100%;
-            text-align: left;
-            box-shadow: 
-                0 25px 50px rgba(0, 0, 0, 0.95),
-                0 0 45px rgba(245, 158, 11, 0.2),
-                inset 0 1px 0 rgba(255, 255, 255, 0.1);
-            position: relative;
-            z-index: 1;
-            transition: all 0.4s ease;
+            background: var(--card-bg); backdrop-filter: blur(20px);
+            border: 1px solid var(--border-color); border-radius: 20px;
+            padding: 34px 28px; max-width: 580px; width: 100%; text-align: left;
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.95), 0 0 45px rgba(245, 158, 11, 0.2);
         }
-        .container::before {
-            content: '';
-            position: absolute;
-            top: -1px;
-            left: 15%;
-            right: 15%;
-            height: 2px;
-            background: linear-gradient(90deg, transparent, #FFB800, #F59E0B, transparent);
-            box-shadow: 0 0 18px #FFB800;
-        }
-        .header-logo {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            margin-bottom: 12px;
-        }
-        .header-logo .lightning {
-            font-size: 38px;
-            color: var(--gold-primary);
-            filter: drop-shadow(0 0 15px rgba(255, 184, 0, 0.9));
-            animation: pulse-glow 2s infinite alternate ease-in-out;
-        }
-        @keyframes pulse-glow {
-            0% { transform: scale(1); filter: drop-shadow(0 0 10px rgba(255, 184, 0, 0.7)); }
-            100% { transform: scale(1.12); filter: drop-shadow(0 0 25px rgba(255, 184, 0, 1)); }
-        }
-        h2 { 
-            margin: 0; 
-            color: #FFFFFF; 
-            text-align: center; 
-            font-size: 24px;
-            font-weight: 800;
-            letter-spacing: 0.6px;
-            text-shadow: 0 2px 10px rgba(0,0,0,0.7);
-        }
-        h2 span {
-            color: var(--gold-primary);
-            text-shadow: 0 0 20px rgba(255, 184, 0, 0.7);
-        }
-        .subtitle { 
-            color: #94A3B8; 
-            font-size: 13px; 
-            text-align: center; 
-            margin-top: 6px;
-            margin-bottom: 26px; 
-            line-height: 1.5;
-        }
-        label { 
-            display: block; 
-            font-weight: 700; 
-            font-size: 12px; 
-            margin-bottom: 7px; 
-            color: #E2E8F0; 
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-        }
+        .header-logo { display: flex; justify-content: center; align-items: center; margin-bottom: 12px; }
+        .header-logo .lightning { font-size: 38px; color: var(--gold-primary); filter: drop-shadow(0 0 15px rgba(255, 184, 0, 0.9)); }
+        h2 { margin: 0; color: #FFFFFF; text-align: center; font-size: 24px; font-weight: 800; }
+        h2 span { color: var(--gold-primary); }
+        .subtitle { color: #94A3B8; font-size: 13px; text-align: center; margin-top: 6px; margin-bottom: 26px; }
+        label { display: block; font-weight: 700; font-size: 12px; margin-bottom: 7px; color: #E2E8F0; text-transform: uppercase; letter-spacing: 0.8px; }
         input[type="text"], textarea {
-            width: 100%;
-            background: var(--input-bg);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 10px;
-            padding: 13px 15px;
-            color: #FFFFFF;
-            font-size: 14px;
-            margin-bottom: 18px;
-            outline: none;
-            transition: all 0.25s ease;
+            width: 100%; background: var(--input-bg); border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px; padding: 13px 15px; color: #FFFFFF; font-size: 14px; margin-bottom: 18px; outline: none;
         }
-        input[type="text"]:focus, textarea:focus { 
-            border-color: var(--gold-primary); 
-            background: rgba(26, 27, 36, 0.95);
-            box-shadow: 0 0 16px rgba(255, 184, 0, 0.35);
-        }
-
+        input[type="text"]:focus, textarea:focus { border-color: var(--gold-primary); background: rgba(26, 27, 36, 0.95); }
         .dropzone {
-            border: 2px dashed rgba(245, 158, 11, 0.45);
-            border-radius: 14px;
-            padding: 26px 18px;
-            cursor: pointer;
-            background: rgba(18, 19, 26, 0.65);
-            transition: all 0.25s ease;
-            text-align: center;
-            margin-bottom: 16px;
+            border: 2px dashed rgba(245, 158, 11, 0.45); border-radius: 14px; padding: 26px 18px;
+            cursor: pointer; background: rgba(18, 19, 26, 0.65); text-align: center; margin-bottom: 16px;
         }
-        .dropzone:hover, .dropzone.dragover { 
-            border-color: var(--gold-primary); 
-            background: rgba(245, 158, 11, 0.1); 
-            box-shadow: 0 0 25px rgba(255, 184, 0, 0.25), inset 0 0 15px rgba(255, 184, 0, 0.15);
-        }
-        .cloud-icon { 
-            font-size: 36px; 
-            margin-bottom: 6px; 
-            color: var(--gold-primary);
-            filter: drop-shadow(0 0 12px rgba(255, 184, 0, 0.8));
-        }
-
-        .progress-box {
-            display: none;
-            margin-bottom: 20px;
-        }
-        .progress-header {
-            display: flex;
-            justify-content: space-between;
-            font-size: 12px;
-            font-weight: 700;
-            margin-bottom: 6px;
-            color: #CBD5E1;
-        }
-        .progress-bar-bg {
-            width: 100%;
-            height: 10px;
-            background: #232530;
-            border-radius: 6px;
-            overflow: hidden;
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            position: relative;
-        }
-        .progress-bar-fill {
-            width: 0%;
-            height: 100%;
-            background: linear-gradient(90deg, #D97706, #FFB800);
-            border-radius: 6px;
-            transition: width 0.25s ease;
-            box-shadow: 0 0 12px rgba(255, 184, 0, 0.6);
-        }
-
-        .progress-bar-fill.reloading {
-            width: 100% !important;
-            background: linear-gradient(90deg, #D97706, #FFB800, #F59E0B, #D97706);
-            background-size: 200% 100%;
-            animation: bar-reload 1.2s infinite linear;
-            box-shadow: 0 0 18px rgba(255, 184, 0, 0.85);
-        }
-        @keyframes bar-reload {
-            0% { background-position: 200% 0; }
-            100% { background-position: -200% 0; }
-        }
-
+        .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 10px; margin-bottom: 18px; }
+        .preview-item { position: relative; border-radius: 8px; overflow: hidden; border: 2px solid transparent; background: #111; cursor: pointer; }
+        .preview-item img { width: 100%; height: 70px; object-fit: cover; display: block; }
+        .preview-item.selected { border-color: var(--gold-primary); box-shadow: 0 0 10px rgba(255,184,0,0.6); }
+        .preview-item .badge { position: absolute; bottom: 2px; right: 2px; background: var(--gold-primary); color: #000; font-size: 9px; font-weight: bold; padding: 1px 4px; border-radius: 4px; display: none; }
+        .preview-item.selected .badge { display: block; }
         .btn {
-            background: #252631;
-            color: #64748B;
-            padding: 15px 28px;
-            border: none;
-            border-radius: 10px;
-            font-size: 15px;
-            font-weight: 800;
-            cursor: not-allowed;
-            transition: all 0.3s ease;
-            width: 100%;
-            box-shadow: none;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
+            background: linear-gradient(135deg, #FFB800 0%, #D97706 100%); color: #050507; padding: 15px 28px;
+            border: none; border-radius: 10px; font-size: 15px; font-weight: 800; cursor: pointer; width: 100%;
+            text-transform: uppercase; letter-spacing: 0.8px; box-shadow: 0 4px 25px rgba(245, 158, 11, 0.45);
         }
-        .btn.ready {
-            background: linear-gradient(135deg, #FFB800 0%, #D97706 100%);
-            color: #050507;
-            cursor: pointer;
-            box-shadow: 0 4px 25px rgba(245, 158, 11, 0.45);
-        }
-        .btn.ready:hover { 
-            background: linear-gradient(135deg, #FFC72C 0%, #F59E0B 100%);
-            box-shadow: 0 6px 30px rgba(255, 184, 0, 0.7);
-            transform: translateY(-2px);
-        }
-
-        .success-screen {
-            display: none;
-            text-align: center;
-            padding: 10px 4px;
-            animation: fadeIn 0.4s ease;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        .success-icon {
-            font-size: 60px;
-            margin-bottom: 12px;
-            filter: drop-shadow(0 0 20px rgba(16, 185, 129, 0.8));
-            animation: pulse-glow-success 2s infinite alternate ease-in-out;
-        }
-        @keyframes pulse-glow-success {
-            0% { transform: scale(1); }
-            100% { transform: scale(1.1); }
-        }
-        .success-title {
-            color: #10B981;
-            font-size: 22px;
-            font-weight: 800;
-            letter-spacing: 0.5px;
-            margin-bottom: 12px;
-            text-shadow: 0 0 15px rgba(16, 185, 129, 0.4);
-        }
-        .success-desc {
-            color: #E2E8F0;
-            font-size: 15px;
-            line-height: 1.6;
-            margin-bottom: 24px;
-            background: rgba(22, 23, 31, 0.7);
-            border: 1px solid rgba(245, 158, 11, 0.25);
-            border-radius: 12px;
-            padding: 18px 16px;
-        }
-        .success-desc strong {
-            color: #FFB800;
-        }
-        .discord-btn {
-            background: linear-gradient(135deg, #5865F2 0%, #4752C4 100%);
-            color: #FFFFFF;
-            padding: 14px 28px;
-            border-radius: 10px;
-            font-weight: 800;
-            text-transform: uppercase;
-            text-decoration: none;
-            display: inline-block;
-            box-shadow: 0 4px 20px rgba(88, 101, 242, 0.4);
-            transition: all 0.25s ease;
-            letter-spacing: 0.6px;
-        }
-        .discord-btn:hover {
-            box-shadow: 0 6px 28px rgba(88, 101, 242, 0.7);
-            transform: translateY(-2px);
-        }
-
-        #status { 
-            margin-top: 15px; 
-            font-size: 13px; 
-            text-align: center; 
-            color: #94A3B8; 
-            line-height: 1.4;
-        }
-        .notice-wait {
-            color: #FFB800 !important;
-            font-weight: 700;
-            font-size: 13px;
-        }
-
-        .modal-overlay {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(5, 5, 7, 0.85);
-            backdrop-filter: blur(10px);
-            -webkit-backdrop-filter: blur(10px);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-            padding: 16px;
-        }
-        .modal-card {
-            background: rgba(18, 19, 27, 0.98);
-            border: 1px solid var(--border-color);
-            border-radius: 18px;
-            padding: 28px 24px;
-            max-width: 420px;
-            width: 100%;
-            text-align: center;
-            box-shadow: 0 20px 45px rgba(0, 0, 0, 0.9), 0 0 35px rgba(245, 158, 11, 0.3);
-            animation: modalPop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-            position: relative;
-        }
-        .modal-card::before {
-            content: '';
-            position: absolute;
-            top: -1px;
-            left: 20%;
-            right: 20%;
-            height: 2px;
-            background: linear-gradient(90deg, transparent, #FFB800, #F59E0B, transparent);
-        }
-        @keyframes modalPop {
-            from { transform: scale(0.85); opacity: 0; }
-            to { transform: scale(1); opacity: 1; }
-        }
-        .modal-icon {
-            font-size: 38px;
-            margin-bottom: 12px;
-            color: #FFB800;
-            filter: drop-shadow(0 0 10px rgba(255, 184, 0, 0.8));
-        }
-        .modal-text {
-            color: #F8FAFC;
-            font-size: 15px;
-            font-weight: 700;
-            line-height: 1.5;
-            margin-bottom: 22px;
-        }
-        .modal-btn {
-            background: linear-gradient(135deg, #FFB800 0%, #D97706 100%);
-            color: #070709;
-            font-weight: 800;
-            border: none;
-            padding: 12px 28px;
-            border-radius: 8px;
-            font-size: 14px;
-            cursor: pointer;
-            text-transform: uppercase;
-            letter-spacing: 0.6px;
-            transition: all 0.2s ease;
-            box-shadow: 0 4px 15px rgba(245, 158, 11, 0.4);
-            width: 100%;
-        }
-        .modal-btn:hover {
-            box-shadow: 0 6px 22px rgba(255, 184, 0, 0.65);
-            transform: translateY(-1px);
-        }
+        .btn:disabled { background: #252631; color: #64748B; cursor: not-allowed; box-shadow: none; }
     </style>
 </head>
 <body>
-    <div class="container" id="mainContainer">
+    <div class="container">
         <div id="formScreen">
-            <div class="header-logo">
-                <span class="lightning">⚡</span>
-            </div>
+            <div class="header-logo"><span class="lightning">⚡</span></div>
             <h2>PEDRAO22K <span>SELLER PORTAL</span></h2>
-            <div class="subtitle">Submit your account listing & upload unlimited proof screenshots in one click.</div>
+            <div class="subtitle">Submit your account listing & choose your primary cover thumbnail.</div>
 
-            <label for="offerTitle">Offer Title (e.g., Wz Top 250 Season 5 + Rare Black Cells)</label>
-            <input type="text" id="offerTitle" placeholder="Enter a catchy title for your account..." required>
+            <label for="offerTitle">Offer Title</label>
+            <input type="text" id="offerTitle" placeholder="e.g. Wz Top 250 Season 5 + Rare Black Cells" required>
 
             <label for="price">Asking Price ($ USD)</label>
-            <input type="text" id="price" inputmode="numeric" placeholder="e.g. 150 (Numbers only)" oninput="filterNumbersOnly(this)" required>
+            <input type="text" id="price" inputmode="numeric" placeholder="e.g. 150" required>
 
-            <label for="desc">Offer Description</label>
-            <textarea id="desc" rows="4" placeholder="Detail your account: mastery camos, levels, rank, skins, CP, access details. No personal contacts." required></textarea>
+            <label for="desc">Offer Description & Details</label>
+            <textarea id="desc" rows="4" placeholder="Detail your account: platform, rank, camos, access..." required></textarea>
 
-            <label>Account Screenshots (Unlimited Proofs)</label>
-            <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
-                <div class="cloud-icon">⚡</div>
-                <div id="dropText" style="font-weight: 700; font-size: 15px; color: #FFFFFF;">Click or Drag & Drop Images Here</div>
-                <div id="dropSub" style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
+            <label>Upload Screenshots (Click an image to set as Cover Thumbnail)</label>
+            <div class="dropzone" onclick="document.getElementById('fileInput').click()">
+                <div style="font-size: 32px; color: #FFB800;">⚡</div>
+                <div style="font-weight: 700; color: #FFF;">Click or Drag & Drop Images Here</div>
             </div>
-
-            <div class="progress-box" id="progressBox">
-                <div class="progress-header">
-                    <span id="progressText">Uploading Screenshots...</span>
-                    <span id="progressPercent" style="color: #FFB800;">0%</span>
-                </div>
-                <div class="progress-bar-bg">
-                    <div class="progress-bar-fill" id="progressBarFill"></div>
-                </div>
-            </div>
-
             <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFileSelection(this.files)">
+
+            <div class="preview-grid" id="previewGrid"></div>
+
             <button id="submitBtn" class="btn" disabled onclick="submitFinalListing()">🚀 Submit Listing to Staff</button>
-            <div id="status">Select screenshots to begin instant upload.</div>
-        </div>
-
-        <div class="success-screen" id="successScreen">
-            <div class="success-icon">🎉</div>
-            <div class="success-title">YOUR OFFER IS UNDER REVIEW!</div>
-            <div class="success-desc">
-                Your account details, including the full description and all screenshots, have been safely received.<br><br>
-                <strong>👉 Please wait for the admin to approve your offer.</strong><br>
-                No further action is required from you here. We will notify you inside your Discord ticket once reviewed!
-            </div>
-            <a href="https://discord.com/channels/@me" class="discord-btn" onclick="window.close()">Return to Discord</a>
-        </div>
-    </div>
-
-    <div class="modal-overlay" id="customModal">
-        <div class="modal-card">
-            <div class="modal-icon">⚠️</div>
-            <div class="modal-text" id="modalMessage">Please fill in all required fields to proceed!</div>
-            <button class="modal-btn" onclick="closeCustomModal()">OK</button>
+            <div id="status" style="text-align: center; font-size: 13px; color: #94A3B8; margin-top: 12px;">Select images to begin.</div>
         </div>
     </div>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const session = urlParams.get('session');
-        let isUploaded = false;
-        let uploadedCount = 0;
-
-        const dropArea = document.getElementById('dropArea');
-        const progressBox = document.getElementById('progressBox');
-        const progressBarFill = document.getElementById('progressBarFill');
-        const progressText = document.getElementById('progressText');
-        const progressPercent = document.getElementById('progressPercent');
-        const submitBtn = document.getElementById('submitBtn');
-        const status = document.getElementById('status');
-        const offerTitleInput = document.getElementById('offerTitle');
-        const priceInput = document.getElementById('price');
-        const descInput = document.getElementById('desc');
-        const customModal = document.getElementById('customModal');
-        const modalMessage = document.getElementById('modalMessage');
-
-        function filterNumbersOnly(input) {
-            input.value = input.value.replace(/[^0-9]/g, '');
-        }
-
-        function showCenteredModal(message) {
-            modalMessage.innerText = message;
-            customModal.style.display = 'flex';
-        }
-
-        function closeCustomModal() {
-            customModal.style.display = 'none';
-        }
-
-        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); }, false);
-            document.body.addEventListener(eventName, (e) => { e.preventDefault(); e.stopPropagation(); }, false);
-        });
-
-        ['dragenter', 'dragover'].forEach(eventName => {
-            dropArea.addEventListener(eventName, () => dropArea.classList.add('dragover'), false);
-        });
-
-        ['dragleave', 'drop'].forEach(eventName => {
-            dropArea.addEventListener(eventName, () => dropArea.classList.remove('dragover'), false);
-        });
-
-        dropArea.addEventListener('drop', (e) => {
-            handleFileSelection(e.dataTransfer.files);
-        }, false);
+        let selectedFiles = [];
+        let primaryIndex = 0;
 
         function handleFileSelection(files) {
-            let validFiles = [];
             for (let i = 0; i < files.length; i++) {
                 if (files[i].type.startsWith('image/')) {
-                    validFiles.push(files[i]);
+                    selectedFiles.push(files[i]);
                 }
             }
-            if (validFiles.length === 0) return;
-
-            uploadImagesDirectly(validFiles);
+            renderPreviews();
         }
 
-        function uploadImagesDirectly(files) {
-            if (!session) {
-                showCenteredModal("Session missing. Please reopen from Discord ticket.");
-                return;
+        function renderPreviews() {
+            const grid = document.getElementById('previewGrid');
+            grid.innerHTML = '';
+            selectedFiles.forEach((file, index) => {
+                const item = document.createElement('div');
+                item.className = 'preview-item ' + (index === primaryIndex ? 'selected' : '');
+                item.onclick = () => { primaryIndex = index; renderPreviews(); };
+                
+                const img = document.createElement('img');
+                img.src = URL.createObjectURL(file);
+                
+                const badge = document.createElement('div');
+                badge.className = 'badge';
+                badge.innerText = 'COVER';
+
+                item.appendChild(img);
+                item.appendChild(badge);
+                grid.appendChild(item);
+            });
+
+            const submitBtn = document.getElementById('submitBtn');
+            if (selectedFiles.length > 0) {
+                submitBtn.disabled = false;
+                document.getElementById('status').innerText = `${selectedFiles.length} images loaded. Click an image to set as Cover Thumbnail.`;
             }
-
-            isUploaded = false;
-            submitBtn.disabled = true;
-            submitBtn.classList.remove('ready');
-            submitBtn.innerText = "⏳ Uploading Screenshots...";
-
-            progressBox.style.display = "block";
-            progressBarFill.classList.remove('reloading');
-            progressBarFill.style.width = "0%";
-            progressText.innerText = `Uploading ${files.length} screenshots...`;
-            progressPercent.innerText = "0%";
-            status.innerText = "Uploading screenshots to server...";
-
-            const formData = new FormData();
-            formData.append("session", session);
-            for (let i = 0; i < files.length; i++) {
-                formData.append("files", files[i]);
-            }
-
-            const xhr = new XMLHttpRequest();
-            xhr.open("POST", "/api/upload_images_only", true);
-
-            xhr.upload.onprogress = function(e) {
-                if (e.lengthComputable) {
-                    const percent = Math.round((e.loaded / e.total) * 100);
-                    progressBarFill.style.width = percent + "%";
-                    progressPercent.innerText = percent + "%";
-                }
-            };
-
-            xhr.onload = function() {
-                try {
-                    const res = JSON.parse(xhr.responseText);
-                    if (xhr.status === 200 && res.status === "ok") {
-                        uploadedCount = res.total_uploaded;
-                        progressBarFill.style.width = "100%";
-                        progressPercent.innerText = "100%";
-                        progressText.innerText = "✅ Screenshots Ready!";
-                        
-                        document.getElementById('dropText').innerText = `✨ ${uploadedCount} Screenshots Ready`;
-                        document.getElementById('dropText').style.color = '#FFB800';
-                        document.getElementById('dropSub').innerText = "All photos loaded. Fill details and click submit below.";
-
-                        isUploaded = true;
-                        submitBtn.disabled = false;
-                        submitBtn.classList.add('ready');
-                        submitBtn.innerText = "🚀 Submit Listing to Staff";
-                        status.innerHTML = `<span class="notice-wait">✨ ${uploadedCount} photo(s) ready! Click submit to dispatch.</span>`;
-                    } else {
-                        showCenteredModal(res.error || "Upload failed. Please reopen from Discord.");
-                        submitBtn.innerText = "❌ Upload Failed";
-                    }
-                } catch (e) {
-                    showCenteredModal("Server connection error. Please try again.");
-                }
-            };
-
-            xhr.onerror = function() {
-                showCenteredModal("Network connection error. Please try again.");
-            };
-
-            xhr.send(formData);
         }
 
         async function submitFinalListing() {
-            const offerTitle = offerTitleInput.value.trim();
-            const price = priceInput.value.trim();
-            const desc = descInput.value.trim();
+            const offerTitle = document.getElementById('offerTitle').value.trim();
+            const price = document.getElementById('price').value.trim();
+            const desc = document.getElementById('desc').value.trim();
 
-            if (!offerTitle) {
-                showCenteredModal("Please fill in the Offer Title field!");
+            if (!offerTitle || !price || !desc || selectedFiles.length === 0) {
+                alert("Please fill in all fields and upload at least one image.");
                 return;
             }
-            if (!price || isNaN(price) || parseInt(price) <= 0) { 
-                showCenteredModal("Please fill in the account value field to proceed!");
-                return; 
-            }
-            if (!desc) { 
-                showCenteredModal("Please fill in the account description field to proceed!"); 
-                return; 
-            }
-            if (!isUploaded || uploadedCount === 0) { 
-                showCenteredModal("Please upload proof screenshots to proceed!"); 
-                return; 
-            }
-
-            submitBtn.disabled = true;
-            submitBtn.classList.remove('ready');
-            submitBtn.innerText = "⏳ Processing...";
-
-            progressBox.style.display = "block";
-            progressBarFill.classList.add('reloading');
-            progressText.innerText = "⚡ Dispatched to Discord Staff...";
-            progressPercent.innerText = "Processing...";
-
-            status.innerHTML = `<span class="notice-wait">⏳ Please wait, we are completing the process, do not do anything...</span>`;
 
             const formData = new FormData();
             formData.append("session", session);
             formData.append("offerTitle", offerTitle);
             formData.append("price", price);
             formData.append("description", desc);
+            formData.append("primaryIndex", primaryIndex);
+
+            selectedFiles.forEach((file) => {
+                formData.append("files", file);
+            });
+
+            document.getElementById('submitBtn').disabled = true;
+            document.getElementById('submitBtn').innerText = "⏳ Uploading & Submitting...";
 
             try {
                 const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
                 const json = await res.json();
                 if (json.status === "ok") {
-                    document.getElementById('formScreen').style.display = 'none';
-                    document.getElementById('successScreen').style.display = 'block';
+                    document.getElementById('formScreen').innerHTML = '<div style="text-align:center; padding: 40px;"><h2 style="color:#10B981">🎉 SUBMITTED SUCCESSFULLY!</h2><p>You can close this window and return to Discord.</p></div>';
                 } else {
-                    progressBarFill.classList.remove('reloading');
-                    showCenteredModal(json.error || "Failed to finalize listing.");
-                    submitBtn.disabled = false;
-                    submitBtn.classList.add('ready');
-                    submitBtn.innerText = "🚀 Submit Listing to Staff";
+                    alert(json.error || "Submission failed.");
+                    document.getElementById('submitBtn').disabled = false;
                 }
             } catch (e) {
-                progressBarFill.classList.remove('reloading');
-                showCenteredModal("Network error while submitting to staff.");
-                submitBtn.disabled = false;
-                submitBtn.classList.add('ready');
-                submitBtn.innerText = "🚀 Submit Listing to Staff";
+                alert("Network error.");
+                document.getElementById('submitBtn').disabled = false;
             }
         }
     </script>
@@ -1266,10 +800,14 @@ async def ping_handler(request):
 async def handle_web_page(request):
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
-async def handle_upload_images_only(request):
+async def handle_finalize_listing(request):
     try:
         reader = await request.multipart()
         session_id = None
+        offer_title = "Verified COD Account"
+        price = ""
+        description = ""
+        primary_index = 0
         saved_paths = []
 
         while True:
@@ -1278,6 +816,14 @@ async def handle_upload_images_only(request):
                 break
             if part.name == "session":
                 session_id = (await part.read()).decode('utf-8')
+            elif part.name == "offerTitle":
+                offer_title = (await part.read()).decode('utf-8')
+            elif part.name == "price":
+                price = (await part.read()).decode('utf-8')
+            elif part.name == "description":
+                description = (await part.read()).decode('utf-8')
+            elif part.name == "primaryIndex":
+                primary_index = int((await part.read()).decode('utf-8'))
             elif part.name == "files":
                 filename = part.filename
                 if filename:
@@ -1292,32 +838,14 @@ async def handle_upload_images_only(request):
                             f.write(chunk)
                     saved_paths.append(file_path)
 
-        if not session_id:
-            return web.json_response({"status": "error", "error": "Missing session ID"}, status=400)
-
-        if session_id not in active_web_sessions:
-            return web.json_response({"status": "error", "error": "Session expired or bot restarted. Please click the button in your Discord ticket again!"}, status=400)
-
-        active_web_sessions[session_id]["uploaded_files"].extend(saved_paths)
-        total_files = len(active_web_sessions[session_id]["uploaded_files"])
-        return web.json_response({"status": "ok", "total_uploaded": total_files})
-    except Exception as e:
-        print(f"Upload error: {e}")
-        return web.json_response({"status": "error", "error": str(e)}, status=500)
-
-async def handle_finalize_listing(request):
-    try:
-        data = await request.post()
-        session_id = data.get("session")
-        offer_title = data.get("offerTitle", "Verified Call of Duty Account")
-        price = data.get("price", "")
-        description = data.get("description", "")
-
         if not session_id or session_id not in active_web_sessions:
-            return web.json_response({"status": "error", "error": "Session expired. Reopen from Discord."}, status=400)
+            return web.json_response({"status": "error", "error": "Session expired."}, status=400)
+
+        if 0 <= primary_index < len(saved_paths):
+            cover_img = saved_paths.pop(primary_index)
+            saved_paths.insert(0, cover_img)
 
         session_info = active_web_sessions[session_id]
-        saved_paths = session_info.get("uploaded_files", [])
         seller_id = session_info["seller_id"]
         channel_id = session_info["channel_id"]
         launcher_msg = session_info["launcher_msg"]
@@ -1329,43 +857,28 @@ async def handle_finalize_listing(request):
 
         raw_clean_price = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
         formatted_price = f"${raw_clean_price} USD (Paid in Crypto)"
-        count_str = f"{len(saved_paths)} proofs attached"
 
         discord_cdn_urls = []
-        batch_size = 10
-        for i in range(0, len(saved_paths), batch_size):
-            chunk = saved_paths[i:i + batch_size]
-            files_to_send = [discord.File(fp) for fp in chunk if os.path.exists(fp)]
-            if files_to_send and review_channel:
-                batch_msg = await review_channel.send(content=f"📸 *Upload Batch for {seller.mention}:*", files=files_to_send)
+        for fp in saved_paths:
+            if os.path.exists(fp):
+                files_to_send = [discord.File(fp)]
+                batch_msg = await review_channel.send(content=f"📸 *Proof for {seller.mention}:*", files=files_to_send)
                 for att in batch_msg.attachments:
                     discord_cdn_urls.append(att.url)
+                os.remove(fp)
 
-        for fp in saved_paths:
-            try:
-                if os.path.exists(fp):
-                    os.remove(fp)
-            except Exception as e:
-                print(f"Error removing temp image: {e}")
+        full_display_title = f"Verified Account • {offer_title}"
 
         submitted_embed = discord.Embed(
             title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
             description=(
-                f"Thank you {seller.mention}! Your Call of Duty account listing has been securely recorded and dispatched to our moderation queue.\n\n"
+                f"Thank you {seller.mention}! Your Call of Duty account listing has been securely recorded.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "### 📋 SUBMISSION OVERVIEW:\n"
                 f"> 🏷️ **Offer Title:** `{offer_title}`\n"
                 f"> 💰 **Asking Price:** `{formatted_price}`\n"
                 f"> 📸 **Screenshots Verified:** `{len(discord_cdn_urls)} proofs uploaded`\n"
-                "> ⏳ **Current Status:** `Pending Admin Verification`\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "### 📌 WHAT HAPPENS NEXT?\n"
-                "1️⃣ **Inspection:** Staff is inspecting all screenshots for compliance with safety rules.\n"
-                "2️⃣ **Marketplace Release:** Once approved, your listing will be published directly to <#1553436681611386961>.\n"
-                "3️⃣ **Direct Alert:** You will receive a direct notification the second a buyer opens an escrow deal.\n\n"
-                "⚠️ **IMPORTANT NOTICE:**\n"
-                "**PLEASE WAIT PATIENTLY FOR THE ADMIN TO APPROVE YOUR OFFER!**\n"
-                "This card will automatically update once staff makes a decision."
+                "> ⏳ **Current Status:** `Pending Admin Verification`"
             ),
             color=0xF59E0B,
             timestamp=datetime.datetime.utcnow()
@@ -1381,20 +894,15 @@ async def handle_finalize_listing(request):
             print(f"Error updating launcher message: {e}")
 
         admin_embed = discord.Embed(
-            title=f"📥 {offer_title}",
+            title=f"📥 {full_display_title}",
             description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
             color=0xF59E0B,
             timestamp=datetime.datetime.utcnow()
         )
-        admin_embed.add_field(name="🎮 Game Title", value="WARZONE / MW4", inline=True)
-        admin_embed.add_field(name="💰 Asking Price", value=formatted_price, inline=True)
-        admin_embed.add_field(name="📝 Offer Description", value=description[:1024], inline=False)
-        admin_embed.add_field(name="📸 Screenshots Received", value=f"`{len(discord_cdn_urls)} photos verified & ready`", inline=False)
-
+        admin_embed.add_field(name="💰 Asking Price", value=formatted_price, inline=False)
+        admin_embed.add_field(name="📋 Account Details", value=description[:1024], inline=False)
         if discord_cdn_urls:
             admin_embed.set_image(url=discord_cdn_urls[0])
-        gallery_links = "\n".join([f"• [Image {idx + 1}]({url})" for idx, url in enumerate(discord_cdn_urls[:35])])
-        admin_embed.add_field(name="🖼️ Proof Gallery Links", value=gallery_links[:1024], inline=False)
 
         if review_channel:
             role_ping = support_role.mention if support_role else "@here"
@@ -1404,12 +912,12 @@ async def handle_finalize_listing(request):
                 ticket_channel=ticket_channel,
                 images=discord_cdn_urls,
                 launcher_msg=launcher_msg,
-                offer_title=offer_title,
+                offer_title=full_display_title,
                 price_str=formatted_price,
                 count_str=f"{len(discord_cdn_urls)} proofs"
             )
             await review_channel.send(
-                content=f"🔔 {role_ping} **New CoD Account Submission! Use buttons below to flip through all {len(discord_cdn_urls)} images:**",
+                content=f"🔔 {role_ping} **New Account Submission (Cover Thumbnail Selected):**",
                 embed=admin_embed,
                 view=approval_view
             )
@@ -1432,51 +940,31 @@ async def start_web_server():
     app = web.Application(client_max_size=300 * 1024 * 1024)
     app.router.add_get("/", ping_handler)
     app.router.add_get("/upload", handle_web_page)
-    app.router.add_post("/api/upload_images_only", handle_upload_images_only)
     app.router.add_post("/api/finalize_listing", handle_finalize_listing)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEB_PORT)
     await site.start()
-    print(f"🌐 All-in-One Seller Portal Engine online on 0.0.0.0:{WEB_PORT}!")
+    print(f"🌐 Seller Portal Web Engine online on 0.0.0.0:{WEB_PORT}!")
 
 class FeedbackModal(Modal, title="Rate Your Experience"):
     def __init__(self):
         super().__init__()
-        self.rating_input = TextInput(
-            label="Rating (1 to 5 Stars)",
-            placeholder="e.g. 5 or ⭐⭐⭐⭐⭐",
-            required=True,
-            max_length=10
-        )
-        self.review_input = TextInput(
-            label="Your Feedback Review",
-            style=discord.TextStyle.paragraph,
-            placeholder="How was the service? (Fast delivery, safe escrow, friendly staff...)",
-            required=True,
-            max_length=500
-        )
+        self.rating_input = TextInput(label="Rating (1 to 5 Stars)", placeholder="e.g. 5 or ⭐⭐⭐⭐⭐", required=True, max_length=10)
+        self.review_input = TextInput(label="Your Feedback Review", style=discord.TextStyle.paragraph, placeholder="How was the service?", required=True, max_length=500)
         self.add_item(self.rating_input)
         self.add_item(self.review_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         stars = self.rating_input.value.strip()
         comment = self.review_input.value.strip()
-
         vouch_channel = interaction.guild.get_channel(VOUCH_CHANNEL_ID)
-        vouch_embed = discord.Embed(
-            title="⭐ NEW VERIFIED CLIENT REVIEW",
-            description=f"**Client:** {interaction.user.mention}\n**Rating:** `{stars}`\n\n> {comment}",
-            color=0xF59E0B,
-            timestamp=datetime.datetime.utcnow()
-        )
+        vouch_embed = discord.Embed(title="⭐ NEW VERIFIED CLIENT REVIEW", description=f"**Client:** {interaction.user.mention}\n**Rating:** `{stars}`\n\n> {comment}", color=0xF59E0B, timestamp=datetime.datetime.utcnow())
         vouch_embed.set_thumbnail(url=interaction.user.display_avatar.url)
         vouch_embed.set_footer(text="Pedrao22k Verified Customer Review")
-
         if vouch_channel:
             await vouch_channel.send(embed=vouch_embed)
-
-        await interaction.response.send_message("🎉 **Thank you so much for your feedback! It has been posted to our vouches channel.**", ephemeral=True)
+        await interaction.response.send_message("🎉 **Thank you so much for your feedback!**", ephemeral=True)
 
 class FeedbackView(View):
     def __init__(self):
@@ -1533,7 +1021,6 @@ async def pay(ctx):
 async def complete(ctx):
     await ctx.message.delete()
     current_channel = ctx.channel
-
     if not current_channel.name.startswith("✅"):
         clean_name = current_channel.name.replace("🎫・", "").replace("🏷️・", "").replace("🛒・", "")
         new_name = f"✅・{clean_name}"
@@ -1546,13 +1033,11 @@ async def complete(ctx):
             "Your order has been fully completed by our professional team.\n\n"
             "⭐ **Leave a Review:**\n"
             "Please click **'Leave Feedback'** below to leave your review and vouch for us in:\n"
-            "> **`#⭐︲vouches-feedback`**\n\n"
-            "Need anything else? Feel free to ask or click below to close this ticket."
+            "> **`#⭐︲vouches-feedback`**"
         ),
         color=0x10B981
     )
     embed.set_footer(text="Pedrao22k. | Fast • Secure • Competitive")
-    
     view = FeedbackView()
     view.add_item(Button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket_btn"))
     await ctx.send(embed=embed, view=view)
@@ -1564,15 +1049,12 @@ async def setup_ticket(ctx):
     embed = discord.Embed(
         title="⚡ PEDRAO22K. | OFFICIAL ORDERS & SUPPORT",
         description=(
-            "Welcome to **Pedrao22k Services**. We provide fast, reliable, and completely private gaming solutions handled by top-tier competitive pros.\n\n"
+            "Welcome to **Pedrao22k Services**. We provide fast, reliable, and completely private gaming solutions.\n\n"
             "### 👑 Available Departments:\n"
             "> 🏆 **Ranked Boosting** — Top 250, Iridescent, Duo Queue, Wins\n"
             "> 🎨 **Camo Services** — Mastery Camos, Weapon Leveling, Challenges\n"
             "> 🛒 **Marketplace** — Buy verified & secure gaming accounts\n"
             "> 💬 **General Support** — Questions, custom requests, & consultations\n\n"
-            "--- \n"
-            "### 💳 Payment Methods:\n"
-            "`USDT (TRC20 / BEP20)` • `Bitcoin (BTC)` • `Litecoin (LTC)`\n\n"
             "🔒 *Select a category from the dropdown menu below to begin your order:*"
         ),
         color=0xF59E0B
@@ -1593,8 +1075,8 @@ async def setup_market(ctx):
             "Want to list your personal Call of Duty / Warzone account for sale in our verified marketplace?\n\n"
             "### 📋 How it works:\n"
             "1. Click the button below to open your private seller channel.\n"
-            "2. Fill in your account description & price in a single popup window.\n"
-            "3. Upload all your screenshots directly.\n"
+            "2. Fill in your offer title, description & price in a single window.\n"
+            "3. Upload screenshots and click on your preferred image to set it as Cover Thumbnail.\n"
             "4. Staff will review and verify before publishing to the marketplace.\n\n"
             "Click below to get started!"
         ),
