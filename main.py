@@ -680,7 +680,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             <label for="price">Asking Price & Currency</label>
             <div class="price-row">
-                <input type="text" id="price" inputmode="numeric" placeholder="e.g. 150" required>
+                <input type="text" id="price" inputmode="decimal" placeholder="e.g. 150" oninput="this.value = this.value.replace(/[^0-9.]/g, '')" required>
                 <select id="currency">
                     <option value="USD">USD ($)</option>
                     <option value="EUR">EUR (€)</option>
@@ -868,7 +868,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
             } catch (e) {
                 alert("Network error.");
-                submitBtn.disabled = false;
+                submitBtn.disabled,submitBtn.disabled = false;
                 submitBtn.innerText = "🚀 Submit Listing to Staff";
             }
         }
@@ -1178,7 +1178,7 @@ async def setup_market(ctx):
         color=0xF59E0B
     )
     if ctx.guild.icon:
-        embed.set_author(name="Pedrao22k Marketplace", icon_url=ctx.guild.icon.url)
+        embed.set_author(name="Pedrao22k Marketplace", icon_url=guild_icon_url := ctx.guild.icon.url)
     embed.set_footer(text="Pedrao22k. | Verified Seller Hub")
     await ctx.send(embed=embed, view=MarketplaceLauncherView())
 
