@@ -582,7 +582,7 @@ class MarketplaceLauncherView(View):
                 "### 🌐 ALL-IN-ONE SELLER DASHBOARD:\n"
                 "Click the button below to open our web interface:\n"
                 "> 1️⃣ Fill in your **Offer Title**, **Asking Price**, and **Description**.\n"
-                "> 2️⃣ Select your account highlights (Top 250, Nukes, Iridescent).\n"
+                "> 2️⃣ Select your account achievements/items.\n"
                 "> 3️⃣ Upload Cover Image and Gallery Screenshots.\n"
                 "> 4️⃣ Click **Submit** — your listing will be dispatched directly to Staff!\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -648,25 +648,25 @@ HTML_PAGE = """<!DOCTYPE html>
         .price-row input { flex: 2; }
         .price-row select { flex: 1; }
         
-        /* تصميم خيارات الإنجازات (Checkboxes) */
+        /* تصميم عناصر الحساب الاحترافي (Checkboxes Grid) */
         .checkbox-container {
             background: rgba(18, 19, 26, 0.7); border: 1px solid rgba(245, 158, 11, 0.25);
             border-radius: 12px; padding: 15px; margin-bottom: 18px;
         }
         .checkbox-title {
-            font-size: 13px; font-weight: 800; color: var(--gold-primary); margin-bottom: 12px;
-            display: flex; justify-content: space-between; align-items: center;
+            font-size: 12px; font-weight: 800; color: var(--gold-primary); margin-bottom: 12px;
+            display: flex; justify-content: space-between; align-items: center; text-transform: uppercase; letter-spacing: 0.8px;
         }
         .select-all-btn {
             background: rgba(245, 158, 11, 0.15); border: 1px solid var(--gold-primary); color: var(--gold-primary);
-            font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; cursor: pointer; text-transform: uppercase;
+            font-size: 10px; font-weight: 700; padding: 4px 10px; border-radius: 6px; cursor: pointer; text-transform: uppercase;
         }
         .select-all-btn:hover { background: var(--gold-primary); color: #000; }
-        .checkbox-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .checkbox-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
         .checkbox-label {
-            display: flex; align-items: center; gap: 8px; background: rgba(22, 23, 31, 0.9);
-            border: 1px solid rgba(255, 255, 255, 0.08); padding: 10px; border-radius: 8px; cursor: pointer;
-            font-size: 13px; font-weight: 600; color: #F8FAFC; transition: 0.2s;
+            display: flex; align-items: center; gap: 10px; background: rgba(22, 23, 31, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.08); padding: 10px 12px; border-radius: 8px; cursor: pointer;
+            font-size: 12px; font-weight: 700; color: #F8FAFC; transition: 0.2s;
         }
         .checkbox-label:hover { border-color: var(--gold-primary); background: rgba(30, 31, 42, 0.95); }
         .checkbox-label input { accent-color: var(--gold-primary); width: 16px; height: 16px; cursor: pointer; }
@@ -716,7 +716,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 </select>
             </div>
 
-            <!-- قسم عناصر الحساب المميزة (Categories Checkboxes) -->
+            <!-- قسم عناصر الحساب الموسع (Checkboxes) -->
             <div class="checkbox-container">
                 <div class="checkbox-title">
                     <span>DOES YOUR ACCOUNT HAVE ANY OF THESE ITEMS?</span>
@@ -726,6 +726,9 @@ HTML_PAGE = """<!DOCTYPE html>
                     <label class="checkbox-label"><input type="checkbox" name="accountItem" value="Top 250"> Top 250</label>
                     <label class="checkbox-label"><input type="checkbox" name="accountItem" value="Nukes"> Nukes</label>
                     <label class="checkbox-label"><input type="checkbox" name="accountItem" value="Iridescent"> Iridescent</label>
+                    <label class="checkbox-label"><input type="checkbox" name="accountItem" value="Interstellar Camo"> Interstellar Camo</label>
+                    <label class="checkbox-label"><input type="checkbox" name="accountItem" value="Borealis Camo"> Borealis Camo</label>
+                    <label class="checkbox-label"><input type="checkbox" name="accountItem" value="Orion Camo"> Orion Camo</label>
                 </div>
             </div>
 
