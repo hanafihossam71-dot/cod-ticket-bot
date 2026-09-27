@@ -868,7 +868,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
             } catch (e) {
                 alert("Network error.");
-                submitBtn.disabled,submitBtn.disabled = false;
+                submitBtn.disabled = false;
                 submitBtn.innerText = "🚀 Submit Listing to Staff";
             }
         }
@@ -1178,7 +1178,8 @@ async def setup_market(ctx):
         color=0xF59E0B
     )
     if ctx.guild.icon:
-        embed.set_author(name="Pedrao22k Marketplace", icon_url=guild_icon_url := ctx.guild.icon.url)
+        guild_icon_url = ctx.guild.icon.url
+        embed.set_author(name="Pedrao22k Marketplace", icon_url=guild_icon_url)
     embed.set_footer(text="Pedrao22k. | Verified Seller Hub")
     await ctx.send(embed=embed, view=MarketplaceLauncherView())
 
