@@ -408,7 +408,7 @@ class AdminApprovalView(View):
             if not market_channel:
                 return await interaction.followup.send("❌ Marketplace forum channel not found!", ephemeral=True)
 
-            thread_title = f"⚡ [${self.price_num} {self.currency}] • {self.offer_title}"
+            thread_title = f"⚡ [{self.price_num} {self.currency}] • {self.offer_title}"
             if len(thread_title) > 95:
                 thread_title = thread_title[:95]
 
@@ -425,7 +425,7 @@ class AdminApprovalView(View):
                 color=0xFFB800,
                 timestamp=datetime.datetime.utcnow()
             )
-            pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`💲 {self.price_num} {self.currency}`** *(Crypto Payment)*", inline=True)
+            pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`{self.price_num} {self.currency}`** *(Crypto Payment)*", inline=True)
             pro_market_embed.add_field(name="🎮 Game / Platform", value="> **`Call of Duty • Warzone / MW3`**", inline=True)
             pro_market_embed.add_field(name="📋 Account Details & Overview", value=f"```yaml\n{self.description}\n```", inline=False)
             pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to securely purchase")
@@ -499,7 +499,7 @@ class AdminApprovalView(View):
             ticket_channel=self.ticket_channel,
             launcher_msg=self.launcher_msg,
             offer_title=self.offer_title,
-            price_str=f"${self.price_num} {self.currency}",
+            price_str=f"{self.price_num} {self.currency}",
             count_str=self.count_str
         )
         await interaction.response.send_modal(modal)
@@ -684,6 +684,12 @@ HTML_PAGE = """<!DOCTYPE html>
                 <select id="currency">
                     <option value="USD">USD ($)</option>
                     <option value="EUR">EUR (€)</option>
+                    <option value="GBP">GBP (£)</option>
+                    <option value="CAD">CAD ($)</option>
+                    <option value="AUD">AUD ($)</option>
+                    <option value="AED">AED (د.إ)</option>
+                    <option value="SAR">SAR (ر.س)</option>
+                    <option value="DZD">DZD (دج)</option>
                 </select>
             </div>
 
