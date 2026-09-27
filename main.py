@@ -633,9 +633,8 @@ HTML_PAGE = """<!DOCTYPE html>
         }
         .header-logo { display: flex; justify-content: center; align-items: center; margin-bottom: 12px; }
         .header-logo .lightning { font-size: 38px; color: var(--gold-primary); filter: drop-shadow(0 0 15px rgba(255, 184, 0, 0.9)); }
-        h2 { margin: 0; color: #FFFFFF; text-align: center; font-size: 24px; font-weight: 800; }
+        h2 { margin: 0; color: #FFFFFF; text-align: center; font-size: 24px; font-weight: 800; margin-bottom: 24px; }
         h2 span { color: var(--gold-primary); }
-        .subtitle { color: #94A3B8; font-size: 13px; text-align: center; margin-top: 6px; margin-bottom: 26px; }
         label { display: block; font-weight: 700; font-size: 12px; margin-bottom: 7px; color: #E2E8F0; text-transform: uppercase; letter-spacing: 0.8px; }
         input[type="text"], select, textarea {
             width: 100%; background: var(--input-bg); border: 1px solid rgba(255, 255, 255, 0.1);
@@ -671,7 +670,6 @@ HTML_PAGE = """<!DOCTYPE html>
         <div id="formScreen">
             <div class="header-logo"><span class="lightning">⚡</span></div>
             <h2>PEDRAO22K <span>SELLER PORTAL</span></h2>
-            <div class="subtitle">Submit your account listing with primary cover & secondary proofs.</div>
 
             <label for="offerTitle">Offer Title</label>
             <input type="text" id="offerTitle" placeholder="e.g. Wz Top 250 Season 5 + Rare Black Cells" required>
@@ -704,10 +702,10 @@ HTML_PAGE = """<!DOCTYPE html>
             <div class="preview-grid" id="coverPreview"></div>
 
             <!-- 2. الصور الثانوية (Gallery) -->
-            <label>📸 Secondary Screenshots (Gallery Proofs)</label>
+            <label>📸 OFFER GALLERY CAPTURES</label>
             <div class="dropzone" onclick="document.getElementById('secondaryInput').click()">
                 <div style="font-size: 26px; color: #FFB800;">📸</div>
-                <div id="secondaryText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to Upload Secondary Screenshots (Multiple)</div>
+                <div id="secondaryText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to upload gallery screenshots (Max 40)</div>
             </div>
             <input type="file" id="secondaryInput" multiple accept="image/*" style="display:none;" onchange="handleSecondarySelection(this.files)">
             <div class="preview-grid" id="secondaryPreview"></div>
@@ -723,7 +721,6 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
 
             <button id="submitBtn" class="btn" disabled onclick="submitFinalListing()">🚀 Submit Listing to Staff</button>
-            <div id="status" style="text-align: center; font-size: 13px; color: #94A3B8; margin-top: 12px;">Upload primary cover and at least one secondary screenshot.</div>
         </div>
     </div>
 
@@ -772,7 +769,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 grid.appendChild(item);
             });
 
-            document.getElementById('secondaryText').innerText = `✨ ${secondaryFiles.length} Secondary Proofs Loaded`;
+            document.getElementById('secondaryText').innerText = `✨ ${secondaryFiles.length} Gallery Screenshots Loaded`;
             document.getElementById('secondaryText').style.color = '#FFB800';
 
             for (let i = 0; i < files.length; i++) {
@@ -801,7 +798,7 @@ HTML_PAGE = """<!DOCTYPE html>
             progressBox.style.display = "block";
             progressBarFill.style.width = "0%";
             progressPercent.innerText = "0%";
-            progressText.innerText = isCover ? "Uploading Primary Cover..." : "Uploading Secondary Proofs...";
+            progressText.innerText = isCover ? "Uploading Primary Cover..." : "Uploading Gallery Screenshots...";
 
             const xhr = new XMLHttpRequest();
             xhr.open("POST", "/api/upload_images_only", true);
@@ -824,10 +821,9 @@ HTML_PAGE = """<!DOCTYPE html>
                         if (isCover) isCoverUploaded = true;
                         checkSubmitReady();
 
-                        // إخفاء شريط التحميل بعد ثانية واحدة لإعطاء مظهر أنيق ونظيف
                         setTimeout(() => {
                             progressBox.style.display = "none";
-                        }, 1000);
+                        }, 800);
                     } else {
                         alert(res.error || "Upload failed.");
                     }
@@ -845,7 +841,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const desc = document.getElementById('desc').value.trim();
 
             if (!offerTitle || !price || !desc || !coverFile || secondaryFiles.length === 0) {
-                alert("Please fill in all fields, upload primary cover, and at least one secondary screenshot.");
+                alert("Please fill in all fields, upload primary cover, and at least one gallery image.");
                 return;
             }
 
