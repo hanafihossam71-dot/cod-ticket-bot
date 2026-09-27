@@ -624,8 +624,16 @@ HTML_PAGE = """<!DOCTYPE html>
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             display: flex; align-items: center; justify-content: center;
             min-height: 100vh; margin: 0; padding: 24px 16px; position: relative;
+            background-image: url('https://cdn.discordapp.com/attachments/1552640603639259207/1553755000000000000/bg_logo.png');
+            background-size: cover; background-position: center; background-repeat: no-repeat;
+            background-attachment: fixed;
+        }
+        body::before {
+            content: ""; position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(7, 7, 9, 0.88); backdrop-filter: blur(12px); z-index: 0;
         }
         .container {
+            position: relative; z-index: 1;
             background: var(--card-bg); backdrop-filter: blur(20px);
             border: 1px solid var(--border-color); border-radius: 20px;
             padding: 34px 28px; max-width: 580px; width: 100%; text-align: left;
