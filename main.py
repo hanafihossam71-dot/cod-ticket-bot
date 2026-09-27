@@ -580,7 +580,7 @@ class MarketplaceLauncherView(View):
                 "### 🌐 ALL-IN-ONE SELLER DASHBOARD:\n"
                 "Click the button below to open our web interface:\n"
                 "> 1️⃣ Fill in your **Offer Title**, **Asking Price**, and **Description**.\n"
-                "> 2️⃣ Upload screenshots and click on your preferred image to set as **Cover Thumbnail**.\n"
+                "> 2️⃣ Upload Cover Image and Secondary Screenshots.\n"
                 "> 3️⃣ Click **Submit** — your listing will be dispatched directly to Staff!\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "🔒 **Chat is locked:** Submissions are processed exclusively through the web portal."
@@ -598,7 +598,8 @@ class MarketplaceLauncherView(View):
             "channel_id": sell_ticket_channel.id,
             "launcher_msg": launcher_msg,
             "created_at": datetime.datetime.utcnow(),
-            "uploaded_files": []
+            "cover_file": None,
+            "secondary_files": []
         }
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -645,15 +646,12 @@ HTML_PAGE = """<!DOCTYPE html>
         .price-row input { flex: 2; }
         .price-row select { flex: 1; }
         .dropzone {
-            border: 2px dashed rgba(245, 158, 11, 0.45); border-radius: 14px; padding: 26px 18px;
-            cursor: pointer; background: rgba(18, 19, 26, 0.65); text-align: center; margin-bottom: 16px;
+            border: 2px dashed rgba(245, 158, 11, 0.45); border-radius: 14px; padding: 20px 15px;
+            cursor: pointer; background: rgba(18, 19, 26, 0.65); text-align: center; margin-bottom: 12px;
         }
-        .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); gap: 10px; margin-bottom: 18px; }
-        .preview-item { position: relative; border-radius: 8px; overflow: hidden; border: 2px solid transparent; background: #111; cursor: pointer; }
-        .preview-item img { width: 100%; height: 70px; object-fit: cover; display: block; }
-        .preview-item.selected { border-color: var(--gold-primary); box-shadow: 0 0 10px rgba(255,184,0,0.6); }
-        .preview-item .badge { position: absolute; bottom: 2px; right: 2px; background: var(--gold-primary); color: #000; font-size: 9px; font-weight: bold; padding: 1px 4px; border-radius: 4px; display: none; }
-        .preview-item.selected .badge { display: block; }
+        .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 8px; margin-bottom: 14px; }
+        .preview-item { position: relative; border-radius: 6px; overflow: hidden; border: 2px solid #333; background: #111; }
+        .preview-item img { width: 100%; height: 60px; object-fit: cover; display: block; }
         
         .progress-box { display: none; margin-bottom: 20px; }
         .progress-header { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; margin-bottom: 6px; color: #CBD5E1; }
@@ -673,7 +671,7 @@ HTML_PAGE = """<!DOCTYPE html>
         <div id="formScreen">
             <div class="header-logo"><span class="lightning">⚡</span></div>
             <h2>PEDRAO22K <span>SELLER PORTAL</span></h2>
-            <div class="subtitle">Submit your account listing & choose your primary cover thumbnail.</div>
+            <div class="subtitle">Submit your account listing with primary cover & secondary proofs.</div>
 
             <label for="offerTitle">Offer Title</label>
             <input type="text" id="offerTitle" placeholder="e.g. Wz Top 250 Season 5 + Rare Black Cells" required>
@@ -696,19 +694,27 @@ HTML_PAGE = """<!DOCTYPE html>
             <label for="desc">Offer Description & Details</label>
             <textarea id="desc" rows="4" placeholder="Detail your account: platform, rank, camos, access..." required></textarea>
 
-            <label>Upload Screenshots (Click an image to set as Cover Thumbnail)</label>
-            <div class="dropzone" id="dropArea" onclick="document.getElementById('fileInput').click()">
-                <div style="font-size: 32px; color: #FFB800;">⚡</div>
-                <div id="dropText" style="font-weight: 700; color: #FFF;">Click or Drag & Drop Images Here</div>
-                <div id="dropSub" style="font-size: 12px; color: #94A3B8; margin-top: 6px;">Select all proofs (Lobby, Weapons, Camos, Operators)</div>
+            <!-- 1. الصورة الأساسية (Cover Thumbnail) -->
+            <label>⭐ Primary Cover Thumbnail (Main Image)</label>
+            <div class="dropzone" onclick="document.getElementById('coverInput').click()">
+                <div style="font-size: 26px; color: #FFB800;">⚡</div>
+                <div id="coverText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to Upload Primary Cover Image</div>
             </div>
-            <input type="file" id="fileInput" multiple accept="image/*" style="display:none;" onchange="handleFileSelection(this.files)">
+            <input type="file" id="coverInput" accept="image/*" style="display:none;" onchange="handleCoverSelection(this.files[0])">
+            <div class="preview-grid" id="coverPreview"></div>
 
-            <div class="preview-grid" id="previewGrid"></div>
+            <!-- 2. الصور الثانوية (Gallery) -->
+            <label>📸 Secondary Screenshots (Gallery Proofs)</label>
+            <div class="dropzone" onclick="document.getElementById('secondaryInput').click()">
+                <div style="font-size: 26px; color: #FFB800;">📸</div>
+                <div id="secondaryText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to Upload Secondary Screenshots (Multiple)</div>
+            </div>
+            <input type="file" id="secondaryInput" multiple accept="image/*" style="display:none;" onchange="handleSecondarySelection(this.files)">
+            <div class="preview-grid" id="secondaryPreview"></div>
 
             <div class="progress-box" id="progressBox">
                 <div class="progress-header">
-                    <span id="progressText">Uploading Screenshots...</span>
+                    <span id="progressText">Uploading Images...</span>
                     <span id="progressPercent" style="color: #FFB800;">0%</span>
                 </div>
                 <div class="progress-bar-bg">
@@ -717,30 +723,66 @@ HTML_PAGE = """<!DOCTYPE html>
             </div>
 
             <button id="submitBtn" class="btn" disabled onclick="submitFinalListing()">🚀 Submit Listing to Staff</button>
-            <div id="status" style="text-align: center; font-size: 13px; color: #94A3B8; margin-top: 12px;">Select screenshots to begin instant upload.</div>
+            <div id="status" style="text-align: center; font-size: 13px; color: #94A3B8; margin-top: 12px;">Upload primary cover and at least one secondary screenshot.</div>
         </div>
     </div>
 
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const session = urlParams.get('session');
-        let selectedFiles = [];
-        let primaryIndex = 0;
-        let isUploaded = false;
-        let uploadedCount = 0;
+        let coverFile = null;
+        let secondaryFiles = [];
+        let isCoverUploaded = false;
 
-        function handleFileSelection(files) {
-            let validFiles = [];
-            for (let i = 0; i < files.length; i++) {
-                if (files[i].type.startsWith('image/')) {
-                    validFiles.push(files[i]);
-                }
+        function checkSubmitReady() {
+            const submitBtn = document.getElementById('submitBtn');
+            if (coverFile && secondaryFiles.length > 0 && isCoverUploaded) {
+                submitBtn.disabled = false;
+            } else {
+                submitBtn.disabled = true;
             }
-            if (validFiles.length === 0) return;
-            uploadImagesDirectly(validFiles);
         }
 
-        function uploadImagesDirectly(files) {
+        function handleCoverSelection(file) {
+            if (!file || !file.type.startsWith('image/')) return;
+            coverFile = file;
+            
+            const grid = document.getElementById('coverPreview');
+            grid.innerHTML = `<div class="preview-item"><img src="${URL.createObjectURL(file)}"></div>`;
+            document.getElementById('coverText').innerText = `✨ Cover Loaded: ${file.name}`;
+            document.getElementById('coverText').style.color = '#FFB800';
+
+            uploadImagesDirectly(file, true);
+        }
+
+        function handleSecondarySelection(files) {
+            for (let i = 0; i < files.length; i++) {
+                if (files[i].type.startsWith('image/')) {
+                    secondaryFiles.push(files[i]);
+                }
+            }
+            if (secondaryFiles.length === 0) return;
+
+            const grid = document.getElementById('secondaryPreview');
+            grid.innerHTML = '';
+            secondaryFiles.forEach(file => {
+                const item = document.createElement('div');
+                item.className = 'preview-item';
+                item.innerHTML = `<img src="${URL.createObjectURL(file)}">`;
+                grid.appendChild(item);
+            });
+
+            document.getElementById('secondaryText').innerText = `✨ ${secondaryFiles.length} Secondary Proofs Loaded`;
+            document.getElementById('secondaryText').style.color = '#FFB800';
+
+            for (let i = 0; i < files.length; i++) {
+                if (files[i].type.startsWith('image/')) {
+                    uploadImagesDirectly(files[i], false);
+                }
+            }
+        }
+
+        function uploadImagesDirectly(file, isCover) {
             if (!session) {
                 alert("Session missing. Please reopen from Discord ticket.");
                 return;
@@ -748,20 +790,18 @@ HTML_PAGE = """<!DOCTYPE html>
 
             const formData = new FormData();
             formData.append("session", session);
-            for (let i = 0; i < files.length; i++) {
-                formData.append("files", files[i]);
-            }
+            formData.append("is_cover", isCover ? "1" : "0");
+            formData.append("files", file);
 
             const progressBox = document.getElementById('progressBox');
             const progressBarFill = document.getElementById('progressBarFill');
             const progressPercent = document.getElementById('progressPercent');
             const progressText = document.getElementById('progressText');
-            const submitBtn = document.getElementById('submitBtn');
 
             progressBox.style.display = "block";
             progressBarFill.style.width = "0%";
             progressPercent.innerText = "0%";
-            progressText.innerText = `Uploading ${files.length} screenshots...`;
+            progressText.innerText = isCover ? "Uploading Primary Cover..." : "Uploading Secondary Proofs...";
 
             const xhr = new XMLHttpRequest();
             xhr.open("POST", "/api/upload_images_only", true);
@@ -778,17 +818,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 try {
                     const res = JSON.parse(xhr.responseText);
                     if (xhr.status === 200 && res.status === "ok") {
-                        uploadedCount = res.total_uploaded;
                         progressBarFill.style.width = "100%";
                         progressPercent.innerText = "100%";
-                        progressText.innerText = "✅ Screenshots Ready!";
-                        
-                        document.getElementById('dropText').innerText = `✨ ${uploadedCount} Screenshots Ready`;
-                        document.getElementById('dropSub').innerText = "All photos loaded. Click an image below to set Cover.";
-
-                        isUploaded = true;
-                        submitBtn.disabled = false;
-                        renderPreviewsLocally(files);
+                        if (isCover) isCoverUploaded = true;
+                        checkSubmitReady();
                     } else {
                         alert(res.error || "Upload failed.");
                     }
@@ -799,38 +832,14 @@ HTML_PAGE = """<!DOCTYPE html>
             xhr.send(formData);
         }
 
-        function renderPreviewsLocally(newFiles) {
-            for(let i=0; i<newFiles.length; i++) {
-                selectedFiles.push(newFiles[i]);
-            }
-            const grid = document.getElementById('previewGrid');
-            grid.innerHTML = '';
-            selectedFiles.forEach((file, index) => {
-                const item = document.createElement('div');
-                item.className = 'preview-item ' + (index === primaryIndex ? 'selected' : '');
-                item.onclick = () => { primaryIndex = index; renderPreviewsLocally([]); };
-                
-                const img = document.createElement('img');
-                img.src = URL.createObjectURL(file);
-                
-                const badge = document.createElement('div');
-                badge.className = 'badge';
-                badge.innerText = 'COVER';
-
-                item.appendChild(img);
-                item.appendChild(badge);
-                grid.appendChild(item);
-            });
-        }
-
         async function submitFinalListing() {
             const offerTitle = document.getElementById('offerTitle').value.trim();
             const price = document.getElementById('price').value.trim();
             const currency = document.getElementById('currency').value;
             const desc = document.getElementById('desc').value.trim();
 
-            if (!offerTitle || !price || !desc || !isUploaded) {
-                alert("Please fill in all fields and ensure images are uploaded.");
+            if (!offerTitle || !price || !desc || !coverFile || secondaryFiles.length === 0) {
+                alert("Please fill in all fields, upload primary cover, and at least one secondary screenshot.");
                 return;
             }
 
@@ -854,7 +863,6 @@ HTML_PAGE = """<!DOCTYPE html>
             formData.append("price", price);
             formData.append("currency", currency);
             formData.append("description", desc);
-            formData.append("primaryIndex", primaryIndex);
 
             try {
                 const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
@@ -887,7 +895,8 @@ async def handle_upload_images_only(request):
     try:
         reader = await request.multipart()
         session_id = None
-        saved_paths = []
+        is_cover = "0"
+        saved_path = None
 
         while True:
             part = await reader.next()
@@ -895,6 +904,8 @@ async def handle_upload_images_only(request):
                 break
             if part.name == "session":
                 session_id = (await part.read()).decode('utf-8')
+            elif part.name == "is_cover":
+                is_cover = (await part.read()).decode('utf-8')
             elif part.name == "files":
                 filename = part.filename
                 if filename:
@@ -907,17 +918,18 @@ async def handle_upload_images_only(request):
                             if not chunk:
                                 break
                             f.write(chunk)
-                    saved_paths.append(file_path)
+                    saved_path = file_path
 
-        if not session_id:
-            return web.json_response({"status": "error", "error": "Missing session ID"}, status=400)
+        if not session_id or session_id not in active_web_sessions:
+            return web.json_response({"status": "error", "error": "Session expired or bot restarted."}, status=400)
 
-        if session_id not in active_web_sessions:
-            return web.json_response({"status": "error", "error": "Session expired or bot restarted. Please reopen from Discord ticket."}, status=400)
+        if saved_path:
+            if is_cover == "1":
+                active_web_sessions[session_id]["cover_file"] = saved_path
+            else:
+                active_web_sessions[session_id]["secondary_files"].append(saved_path)
 
-        active_web_sessions[session_id]["uploaded_files"].extend(saved_paths)
-        total_files = len(active_web_sessions[session_id]["uploaded_files"])
-        return web.json_response({"status": "ok", "total_uploaded": total_files})
+        return web.json_response({"status": "ok"})
     except Exception as e:
         print(f"Upload error: {e}")
         return web.json_response({"status": "error", "error": str(e)}, status=500)
@@ -930,13 +942,13 @@ async def handle_finalize_listing(request):
         price = data.get("price", "")
         currency = data.get("currency", "USD")
         description = data.get("description", "")
-        primary_index = int(data.get("primaryIndex", 0))
 
         if not session_id or session_id not in active_web_sessions:
             return web.json_response({"status": "error", "error": "Session expired."}, status=400)
 
         session_info = active_web_sessions[session_id]
-        saved_paths = session_info.get("uploaded_files", [])
+        cover_path = session_info.get("cover_file")
+        secondary_paths = session_info.get("secondary_files", [])
         seller_id = session_info["seller_id"]
         channel_id = session_info["channel_id"]
         launcher_msg = session_info["launcher_msg"]
@@ -946,20 +958,22 @@ async def handle_finalize_listing(request):
         support_role = ticket_channel.guild.get_role(SUPPORT_ROLE_ID) if ticket_channel else None
         seller = bot.get_user(seller_id) or await bot.fetch_user(seller_id)
 
-        if 0 <= primary_index < len(saved_paths):
-            cover_img = saved_paths.pop(primary_index)
-            saved_paths.insert(0, cover_img)
+        all_paths = []
+        if cover_path and os.path.exists(cover_path):
+            all_paths.append(cover_path)
+        for sp in secondary_paths:
+            if os.path.exists(sp):
+                all_paths.append(sp)
 
-        clean_price_num = price.replace("$", "").replace("USD", "").replace("usd", "").replace("EUR", "").replace("eur", "").strip()
+        clean_price_num = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
 
         discord_cdn_urls = []
-        for fp in saved_paths:
-            if os.path.exists(fp):
-                files_to_send = [discord.File(fp)]
-                batch_msg = await review_channel.send(content=f"📸 *Proof for {seller.mention}:*", files=files_to_send)
-                for att in batch_msg.attachments:
-                    discord_cdn_urls.append(att.url)
-                os.remove(fp)
+        for fp in all_paths:
+            files_to_send = [discord.File(fp)]
+            batch_msg = await review_channel.send(content=f"📸 *Proof for {seller.mention}:*", files=files_to_send)
+            for att in batch_msg.attachments:
+                discord_cdn_urls.append(att.url)
+            os.remove(fp)
 
         submitted_embed = discord.Embed(
             title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
@@ -1171,7 +1185,7 @@ async def setup_market(ctx):
             "### 📋 How it works:\n"
             "1. Click the button below to open your private seller channel.\n"
             "2. Fill in your offer title, description & price in a single window.\n"
-            "3. Upload screenshots and click on your preferred image to set it as Cover Thumbnail.\n"
+            "3. Upload Cover Image and Secondary Screenshots.\n"
             "4. Staff will review and verify before publishing to the marketplace.\n\n"
             "Click below to get started!"
         ),
