@@ -352,7 +352,7 @@ class MarketplaceCarouselView(View):
         await interaction.response.send_message(f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}", ephemeral=True)
 
 class AdminApprovalView(View):
-    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", currency: str = "USD", description: str = "", count_str: str = ""):
+    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", currency: str = "USD", items_list: str = "None", description: str = "", count_str: str = ""):
         super().__init__(timeout=None)
         self.seller = seller
         self.embed_data = embed_data
@@ -362,6 +362,7 @@ class AdminApprovalView(View):
         self.offer_title = offer_title
         self.price_num = price_num
         self.currency = currency
+        self.items_list = items_list
         self.description = description
         self.count_str = count_str
         self.current_index = 0
@@ -427,6 +428,7 @@ class AdminApprovalView(View):
             )
             pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`{self.price_num} {self.currency}`** *(Crypto Payment)*", inline=True)
             pro_market_embed.add_field(name="🎮 Game / Platform", value="> **`Call of Duty • Warzone / MW3`**", inline=True)
+            pro_market_embed.add_field(name="🌟 Account Highlights", value=f"> **`{self.items_list}`**", inline=False)
             pro_market_embed.add_field(name="📋 Account Details & Overview", value=f"```yaml\n{self.description}\n```", inline=False)
             pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to securely purchase")
 
@@ -580,8 +582,9 @@ class MarketplaceLauncherView(View):
                 "### 🌐 ALL-IN-ONE SELLER DASHBOARD:\n"
                 "Click the button below to open our web interface:\n"
                 "> 1️⃣ Fill in your **Offer Title**, **Asking Price**, and **Description**.\n"
-                "> 2️⃣ Upload Cover Image and Secondary Screenshots.\n"
-                "> 3️⃣ Click **Submit** — your listing will be dispatched directly to Staff!\n\n"
+                "> 2️⃣ Select your account highlights (Top 250, Nukes, Iridescent).\n"
+                "> 3️⃣ Upload Cover Image and Gallery Screenshots.\n"
+                "> 4️⃣ Click **Submit** — your listing will be dispatched directly to Staff!\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "🔒 **Chat is locked:** Submissions are processed exclusively through the web portal."
             ),
@@ -644,6 +647,30 @@ HTML_PAGE = """<!DOCTYPE html>
         .price-row { display: flex; gap: 10px; }
         .price-row input { flex: 2; }
         .price-row select { flex: 1; }
+        
+        /* تصميم خيارات الإنجازات (Checkboxes) */
+        .checkbox-container {
+            background: rgba(18, 19, 26, 0.7); border: 1px solid rgba(245, 158, 11, 0.25);
+            border-radius: 12px; padding: 15px; margin-bottom: 18px;
+        }
+        .checkbox-title {
+            font-size: 13px; font-weight: 800; color: var(--gold-primary); margin-bottom: 12px;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .select-all-btn {
+            background: rgba(245, 158, 11, 0.15); border: 1px solid var(--gold-primary); color: var(--gold-primary);
+            font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; cursor: pointer; text-transform: uppercase;
+        }
+        .select-all-btn:hover { background: var(--gold-primary); color: #000; }
+        .checkbox-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .checkbox-label {
+            display: flex; align-items: center; gap: 8px; background: rgba(22, 23, 31, 0.9);
+            border: 1px solid rgba(255, 255, 255, 0.08); padding: 10px; border-radius: 8px; cursor: pointer;
+            font-size: 13px; font-weight: 600; color: #F8FAFC; transition: 0.2s;
+        }
+        .checkbox-label:hover { border-color: var(--gold-primary); background: rgba(30, 31, 42, 0.95); }
+        .checkbox-label input { accent-color: var(--gold-primary); width: 16px; height: 16px; cursor: pointer; }
+
         .dropzone {
             border: 2px dashed rgba(245, 158, 11, 0.45); border-radius: 14px; padding: 20px 15px;
             cursor: pointer; background: rgba(18, 19, 26, 0.65); text-align: center; margin-bottom: 12px;
@@ -689,6 +716,19 @@ HTML_PAGE = """<!DOCTYPE html>
                 </select>
             </div>
 
+            <!-- قسم عناصر الحساب المميزة (Categories Checkboxes) -->
+            <div class="checkbox-container">
+                <div class="checkbox-title">
+                    <span>DOES YOUR ACCOUNT HAVE ANY OF THESE ITEMS?</span>
+                    <button type="button" class="select-all-btn" onclick="toggleSelectAll(this)">Select All</button>
+                </div>
+                <div class="checkbox-grid">
+                    <label class="checkbox-label"><input type="checkbox" name="accountItem" value="Top 250"> Top 250</label>
+                    <label class="checkbox-label"><input type="checkbox" name="accountItem" value="Nukes"> Nukes</label>
+                    <label class="checkbox-label"><input type="checkbox" name="accountItem" value="Iridescent"> Iridescent</label>
+                </div>
+            </div>
+
             <label for="desc">Offer Description & Details</label>
             <textarea id="desc" rows="4" placeholder="Detail your account: platform, rank, camos, access..." required></textarea>
 
@@ -730,6 +770,13 @@ HTML_PAGE = """<!DOCTYPE html>
         let coverFile = null;
         let secondaryFiles = [];
         let isCoverUploaded = false;
+
+        function toggleSelectAll(btn) {
+            const checkboxes = document.querySelectorAll('input[name="accountItem"]');
+            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+            checkboxes.forEach(cb => cb.checked = !allChecked);
+            btn.innerText = allChecked ? "Select All" : "Deselect All";
+        }
 
         function checkSubmitReady() {
             const submitBtn = document.getElementById('submitBtn');
@@ -840,6 +887,12 @@ HTML_PAGE = """<!DOCTYPE html>
             const currency = document.getElementById('currency').value;
             const desc = document.getElementById('desc').value.trim();
 
+            const selectedItems = [];
+            document.querySelectorAll('input[name="accountItem"]:checked').forEach(cb => {
+                selectedItems.push(cb.value);
+            });
+            const itemsString = selectedItems.length > 0 ? selectedItems.join(' • ') : 'None';
+
             if (!offerTitle || !price || !desc || !coverFile || secondaryFiles.length === 0) {
                 alert("Please fill in all fields, upload primary cover, and at least one gallery image.");
                 return;
@@ -864,6 +917,7 @@ HTML_PAGE = """<!DOCTYPE html>
             formData.append("offerTitle", offerTitle);
             formData.append("price", price);
             formData.append("currency", currency);
+            formData.append("items", itemsString);
             formData.append("description", desc);
 
             try {
@@ -943,6 +997,7 @@ async def handle_finalize_listing(request):
         offer_title = data.get("offerTitle", "Verified COD Account")
         price = data.get("price", "")
         currency = data.get("currency", "USD")
+        items_list = data.get("items", "None")
         description = data.get("description", "")
 
         if not session_id or session_id not in active_web_sessions:
@@ -985,6 +1040,7 @@ async def handle_finalize_listing(request):
                 "### 📋 SUBMISSION OVERVIEW:\n"
                 f"> 🏷️ **Offer Title:** `{offer_title}`\n"
                 f"> 💰 **Asking Price:** `{clean_price_num} {currency}`\n"
+                f"> 🌟 **Highlights:** `{items_list}`\n"
                 f"> 📸 **Screenshots Verified:** `{len(discord_cdn_urls)} proofs uploaded`\n"
                 "> ⏳ **Current Status:** `Pending Admin Verification`"
             ),
@@ -1008,6 +1064,7 @@ async def handle_finalize_listing(request):
             timestamp=datetime.datetime.utcnow()
         )
         admin_embed.add_field(name="💰 Asking Price", value=f"{clean_price_num} {currency}", inline=False)
+        admin_embed.add_field(name="🌟 Account Highlights", value=f"{items_list}", inline=False)
         admin_embed.add_field(name="📋 Account Details", value=description[:1024], inline=False)
         if discord_cdn_urls:
             admin_embed.set_image(url=discord_cdn_urls[0])
@@ -1023,6 +1080,7 @@ async def handle_finalize_listing(request):
                 offer_title=offer_title,
                 price_num=clean_price_num,
                 currency=currency,
+                items_list=items_list,
                 description=description,
                 count_str=f"{len(discord_cdn_urls)} proofs"
             )
