@@ -352,7 +352,7 @@ class MarketplaceCarouselView(View):
         await interaction.response.send_message(f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}", ephemeral=True)
 
 class AdminApprovalView(View):
-    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", description: str = "", count_str: str = ""):
+    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", currency: str = "USD", description: str = "", count_str: str = ""):
         super().__init__(timeout=None)
         self.seller = seller
         self.embed_data = embed_data
@@ -361,6 +361,7 @@ class AdminApprovalView(View):
         self.launcher_msg = launcher_msg
         self.offer_title = offer_title
         self.price_num = price_num
+        self.currency = currency
         self.description = description
         self.count_str = count_str
         self.current_index = 0
@@ -407,7 +408,7 @@ class AdminApprovalView(View):
             if not market_channel:
                 return await interaction.followup.send("❌ Marketplace forum channel not found!", ephemeral=True)
 
-            thread_title = f"⚡ [${self.price_num} USD] • {self.offer_title}"
+            thread_title = f"⚡ [${self.price_num} {self.currency}] • {self.offer_title}"
             if len(thread_title) > 95:
                 thread_title = thread_title[:95]
 
@@ -424,7 +425,7 @@ class AdminApprovalView(View):
                 color=0xFFB800,
                 timestamp=datetime.datetime.utcnow()
             )
-            pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`💲 {self.price_num} USD`** *(Crypto Payment)*", inline=True)
+            pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`💲 {self.price_num} {self.currency}`** *(Crypto Payment)*", inline=True)
             pro_market_embed.add_field(name="🎮 Game / Platform", value="> **`Call of Duty • Warzone / MW3`**", inline=True)
             pro_market_embed.add_field(name="📋 Account Details & Overview", value=f"```yaml\n{self.description}\n```", inline=False)
             pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to securely purchase")
@@ -498,7 +499,7 @@ class AdminApprovalView(View):
             ticket_channel=self.ticket_channel,
             launcher_msg=self.launcher_msg,
             offer_title=self.offer_title,
-            price_str=f"${self.price_num} USD",
+            price_str=f"${self.price_num} {self.currency}",
             count_str=self.count_str
         )
         await interaction.response.send_modal(modal)
@@ -635,11 +636,14 @@ HTML_PAGE = """<!DOCTYPE html>
         h2 span { color: var(--gold-primary); }
         .subtitle { color: #94A3B8; font-size: 13px; text-align: center; margin-top: 6px; margin-bottom: 26px; }
         label { display: block; font-weight: 700; font-size: 12px; margin-bottom: 7px; color: #E2E8F0; text-transform: uppercase; letter-spacing: 0.8px; }
-        input[type="text"], textarea {
+        input[type="text"], select, textarea {
             width: 100%; background: var(--input-bg); border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 10px; padding: 13px 15px; color: #FFFFFF; font-size: 14px; margin-bottom: 18px; outline: none;
         }
-        input[type="text"]:focus, textarea:focus { border-color: var(--gold-primary); background: rgba(26, 27, 36, 0.95); }
+        input[type="text"]:focus, select:focus, textarea:focus { border-color: var(--gold-primary); background: rgba(26, 27, 36, 0.95); }
+        .price-row { display: flex; gap: 10px; }
+        .price-row input { flex: 2; }
+        .price-row select { flex: 1; }
         .dropzone {
             border: 2px dashed rgba(245, 158, 11, 0.45); border-radius: 14px; padding: 26px 18px;
             cursor: pointer; background: rgba(18, 19, 26, 0.65); text-align: center; margin-bottom: 16px;
@@ -674,8 +678,14 @@ HTML_PAGE = """<!DOCTYPE html>
             <label for="offerTitle">Offer Title</label>
             <input type="text" id="offerTitle" placeholder="e.g. Wz Top 250 Season 5 + Rare Black Cells" required>
 
-            <label for="price">Asking Price ($ USD)</label>
-            <input type="text" id="price" inputmode="numeric" placeholder="e.g. 150" required>
+            <label for="price">Asking Price & Currency</label>
+            <div class="price-row">
+                <input type="text" id="price" inputmode="numeric" placeholder="e.g. 150" required>
+                <select id="currency">
+                    <option value="USD">USD ($)</option>
+                    <option value="EUR">EUR (€)</option>
+                </select>
+            </div>
 
             <label for="desc">Offer Description & Details</label>
             <textarea id="desc" rows="4" placeholder="Detail your account: platform, rank, camos, access..." required></textarea>
@@ -810,6 +820,7 @@ HTML_PAGE = """<!DOCTYPE html>
         async function submitFinalListing() {
             const offerTitle = document.getElementById('offerTitle').value.trim();
             const price = document.getElementById('price').value.trim();
+            const currency = document.getElementById('currency').value;
             const desc = document.getElementById('desc').value.trim();
 
             if (!offerTitle || !price || !desc || !isUploaded) {
@@ -835,6 +846,7 @@ HTML_PAGE = """<!DOCTYPE html>
             formData.append("session", session);
             formData.append("offerTitle", offerTitle);
             formData.append("price", price);
+            formData.append("currency", currency);
             formData.append("description", desc);
             formData.append("primaryIndex", primaryIndex);
 
@@ -910,6 +922,7 @@ async def handle_finalize_listing(request):
         session_id = data.get("session")
         offer_title = data.get("offerTitle", "Verified COD Account")
         price = data.get("price", "")
+        currency = data.get("currency", "USD")
         description = data.get("description", "")
         primary_index = int(data.get("primaryIndex", 0))
 
@@ -931,7 +944,7 @@ async def handle_finalize_listing(request):
             cover_img = saved_paths.pop(primary_index)
             saved_paths.insert(0, cover_img)
 
-        clean_price_num = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
+        clean_price_num = price.replace("$", "").replace("USD", "").replace("usd", "").replace("EUR", "").replace("eur", "").strip()
 
         discord_cdn_urls = []
         for fp in saved_paths:
@@ -949,7 +962,7 @@ async def handle_finalize_listing(request):
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "### 📋 SUBMISSION OVERVIEW:\n"
                 f"> 🏷️ **Offer Title:** `{offer_title}`\n"
-                f"> 💰 **Asking Price:** `${clean_price_num} USD`\n"
+                f"> 💰 **Asking Price:** `{clean_price_num} {currency}`\n"
                 f"> 📸 **Screenshots Verified:** `{len(discord_cdn_urls)} proofs uploaded`\n"
                 "> ⏳ **Current Status:** `Pending Admin Verification`"
             ),
@@ -972,7 +985,7 @@ async def handle_finalize_listing(request):
             color=0xF59E0B,
             timestamp=datetime.datetime.utcnow()
         )
-        admin_embed.add_field(name="💰 Asking Price", value=f"${clean_price_num} USD", inline=False)
+        admin_embed.add_field(name="💰 Asking Price", value=f"{clean_price_num} {currency}", inline=False)
         admin_embed.add_field(name="📋 Account Details", value=description[:1024], inline=False)
         if discord_cdn_urls:
             admin_embed.set_image(url=discord_cdn_urls[0])
@@ -987,6 +1000,7 @@ async def handle_finalize_listing(request):
                 launcher_msg=launcher_msg,
                 offer_title=offer_title,
                 price_num=clean_price_num,
+                currency=currency,
                 description=description,
                 count_str=f"{len(discord_cdn_urls)} proofs"
             )
