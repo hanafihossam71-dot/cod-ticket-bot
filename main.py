@@ -6,10 +6,11 @@ import io
 import datetime
 import os
 import uuid
+import aiohttp
 from aiohttp import web
 
 # ======================== بيانات السيرفر والتصنيفات ========================
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.environ.get("DISCORD_TOKEN", "")
 
 WELCOME_CHANNEL_ID = 1552627900191219752        # آيدي روم welcome
 SUPPORT_ROLE_ID = 1552628903481184336            # آيدي رتبة Admin
@@ -21,7 +22,10 @@ REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإد�
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
 WEB_PORT = int(os.environ.get("PORT", 8080))
-BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
+BASE_WEB_URL = os.environ.get("BASE_WEB_URL", "https://cod-ticket-bot-production.up.railway.app")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+SHOP_URL = os.environ.get("SHOP_URL", "https://projeto-optmus-prime.vercel.app")
 
 CRYPTO_ADDRESSES = {
     "USDT_TRC20": "TYourTRC20AddressHereXXXXXXXXXXXXXX",
@@ -37,6 +41,72 @@ intents.guilds = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+async def supabase_request(method: str, endpoint: str, *, json_data=None, body=None, content_type=None):
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError("Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Railway.")
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+    if json_data is not None:
+        headers["Content-Type"] = "application/json"
+        headers["Prefer"] = "return=representation"
+    if content_type:
+        headers["Content-Type"] = content_type
+        headers["x-upsert"] = "false"
+    timeout = aiohttp.ClientTimeout(total=90)
+    async with aiohttp.ClientSession(timeout=timeout) as client:
+        async with client.request(method, f"{SUPABASE_URL}{endpoint}", headers=headers, json=json_data, data=body) as response:
+            text_body = await response.text()
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"Supabase request failed ({response.status}): {text_body[:500]}")
+            if not text_body:
+                return None
+            try:
+                return await response.json()
+            except Exception:
+                return text_body
+
+async def create_supabase_listing(seller_id: int, title: str, price: float, currency: str, category: str, description: str, image_paths: list):
+    rows = await supabase_request(
+        "POST", "/rest/v1/listings",
+        json_data={
+            "seller_discord_id": str(seller_id),
+            "title": title,
+            "price": price,
+            "currency": currency,
+            "category": category,
+            "description": description,
+            "status": "PENDING_REVIEW",
+            "sort_order": 0,
+        },
+    )
+    if not isinstance(rows, list) or not rows or not rows[0].get("id"):
+        raise RuntimeError("Supabase did not return the new listing ID.")
+    listing_id = rows[0]["id"]
+    image_rows = []
+    for index, image_path in enumerate(image_paths):
+        if not os.path.isfile(image_path):
+            raise RuntimeError("An uploaded image is missing from the server.")
+        ext = os.path.splitext(image_path)[1].lower() or ".jpg"
+        object_path = f"{listing_id}/{index:02d}-{uuid.uuid4().hex}{ext}"
+        with open(image_path, "rb") as image_file:
+            payload = image_file.read()
+        mime = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/gif" if ext == ".gif" else "image/jpeg"
+        await supabase_request("POST", f"/storage/v1/object/listing-images/{object_path}", body=payload, content_type=mime)
+        image_rows.append({"listing_id": listing_id, "image_url": object_path, "sort_order": index})
+    if image_rows:
+        await supabase_request("POST", "/rest/v1/listing_images", json_data=image_rows)
+    return listing_id
+
+async def set_listing_status(listing_id: str, status: str):
+    if not listing_id:
+        return
+    await supabase_request(
+        "PATCH", f"/rest/v1/listings?id=eq.{listing_id}",
+        json_data={"status": status},
+    )
 
 os.makedirs("uploaded_screenshots", exist_ok=True)
 active_web_sessions = {}
@@ -202,7 +272,7 @@ class TicketLauncherView(View):
         self.add_item(TicketSelect())
 
 class RejectReasonModal(Modal, title="Listing Rejection Reason"):
-    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = ""):
+    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = "", listing_id: str = ""):
         super().__init__()
         self.seller = seller
         self.ticket_channel = ticket_channel
@@ -210,6 +280,7 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
         self.offer_title = offer_title
         self.price_str = price_str
         self.count_str = count_str
+        self.listing_id = listing_id
         self.reason_input = TextInput(
             label="Reason for Declining",
             style=discord.TextStyle.paragraph,
@@ -221,6 +292,10 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
 
     async def on_submit(self, interaction: discord.Interaction):
         reason = self.reason_input.value.strip()
+        try:
+            await set_listing_status(self.listing_id, "REJECTED")
+        except Exception as e:
+            return await interaction.response.send_message(f"❌ Could not update listing status in Supabase: `{e}`", ephemeral=True)
         await interaction.response.send_message(f"✅ Rejection reason sent to seller: `{reason}`", ephemeral=True)
 
         if self.launcher_msg:
@@ -352,7 +427,7 @@ class MarketplaceCarouselView(View):
         await interaction.response.send_message(f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}", ephemeral=True)
 
 class AdminApprovalView(View):
-    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", currency: str = "USD", items_list: str = "None", description: str = "", count_str: str = ""):
+    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", currency: str = "USD", items_list: str = "None", description: str = "", count_str: str = "", listing_id: str = ""):
         super().__init__(timeout=None)
         self.seller = seller
         self.embed_data = embed_data
@@ -365,6 +440,7 @@ class AdminApprovalView(View):
         self.items_list = items_list
         self.description = description
         self.count_str = count_str
+        self.listing_id = listing_id
         self.current_index = 0
         self.posted_market_message = None
         self.created_thread = None
@@ -400,80 +476,23 @@ class AdminApprovalView(View):
             self.update_carousel()
             await interaction.response.edit_message(embed=self.embed_data, view=self)
 
-    @discord.ui.button(label="Approve & Post to Forum", style=discord.ButtonStyle.success, emoji="✅", row=1)
+    @discord.ui.button(label="Approve & Publish to Shop", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def approve(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
-        
         try:
-            market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
-            if not market_channel:
-                return await interaction.followup.send("❌ Marketplace forum channel not found!", ephemeral=True)
-
-            thread_title = f"⚡ [{self.price_num} {self.currency}] • {self.offer_title}"
-            if len(thread_title) > 95:
-                thread_title = thread_title[:95]
-
-            pro_market_embed = discord.Embed(
-                title=f"👑 ┃ {self.offer_title.upper()}",
-                description=(
-                    "```prolog\n"
-                    "💎 OFFICIAL PEDRAO22K VERIFIED MARKETPLACE 💎\n"
-                    "==============================================\n"
-                    "• STATUS : 🟢 100% VERIFIED & READY FOR INSTANT ESCROW\n"
-                    "• SAFETY : 🛡️ SECURE ADMIN TRANSFER & FULL ACCESS\n"
-                    "```"
-                ),
-                color=0xFFB800,
-                timestamp=datetime.datetime.utcnow()
-            )
-            pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`{self.price_num} {self.currency}`** *(Crypto Payment)*", inline=True)
-            pro_market_embed.add_field(name="🎮 Game / Platform", value="> **`Call of Duty • Warzone / MW3`**", inline=True)
-            pro_market_embed.add_field(name="🌟 Account Highlights", value=f"> **`{self.items_list}`**", inline=False)
-            pro_market_embed.add_field(name="📋 Account Details & Overview", value=f"```yaml\n{self.description}\n```", inline=False)
-            pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to securely purchase")
-
-            if self.images:
-                pro_market_embed.set_image(url=self.images[0])
-
-            market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
-
-            available_tag = None
-            if hasattr(market_channel, 'available_tags'):
-                for tag in market_channel.available_tags:
-                    if "avail" in tag.name.lower():
-                        available_tag = tag
-                        break
-            applied_tags = [available_tag] if available_tag else []
-
-            if isinstance(market_channel, discord.ForumChannel):
-                thread_with_message = await market_channel.create_thread(
-                    name=thread_title,
-                    embed=pro_market_embed,
-                    view=market_view,
-                    applied_tags=applied_tags
-                )
-                self.posted_market_message = thread_with_message.message
-                self.created_thread = thread_with_message.thread
-                webhook_msg_url = thread_with_message.message.jump_url
-            else:
-                payload_message = await market_channel.send(embed=pro_market_embed, view=market_view)
-                self.posted_market_message = payload_message
-                webhook_msg_url = payload_message.jump_url
-
+            await set_listing_status(self.listing_id, "PUBLISHED")
             button.disabled = True
             self.reject.disabled = True
             self.sold_btn.disabled = False
-            
-            await interaction.message.edit(content="✅ **Listing Published Successfully with Luxury Layout!**", view=self)
-            await interaction.followup.send("✅ **Listing successfully published to the forum marketplace!**", ephemeral=True)
-
+            await interaction.message.edit(content="✅ **Listing approved and published to Accounts Shop!**", view=self)
+            await interaction.followup.send(f"✅ Listing is now live in the [Accounts Shop]({SHOP_URL}).", ephemeral=True)
             if self.launcher_msg:
                 try:
                     approved_embed = discord.Embed(
-                        title="🎉 LISTING APPROVED & PUBLISHED ON MARKETPLACE",
+                        title="🎉 LISTING APPROVED & PUBLISHED ON ACCOUNTS SHOP",
                         description=(
-                            f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** to the marketplace.\n\n"
-                            f"🔗 **Listing URL:** [Click to View on Market]({webhook_msg_url})\n"
+                            f"Great news {self.seller.mention}! Your account listing has been approved and is now visible in our Accounts Shop.\n\n"
+                            f"🔗 **Accounts Shop:** [View Shop]({SHOP_URL})"
                         ),
                         color=0x10B981,
                         timestamp=datetime.datetime.utcnow()
@@ -484,15 +503,13 @@ class AdminApprovalView(View):
                     await self.launcher_msg.edit(embed=approved_embed, view=None)
                 except Exception as e:
                     print(f"Error editing launcher to approved: {e}")
-
             try:
-                await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your listing is now live!** Check it here: {webhook_msg_url}")
-            except:
+                await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your account has been approved and is now live in the [Accounts Shop]({SHOP_URL}).**")
+            except Exception:
                 pass
-
         except Exception as e:
             print(f"Approval error: {e}")
-            await interaction.followup.send(f"❌ An error occurred during publishing: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ Could not publish listing: `{e}`", ephemeral=True)
 
     @discord.ui.button(label="Reject Listing", style=discord.ButtonStyle.danger, emoji="❌", row=1)
     async def reject(self, interaction: discord.Interaction, button: Button):
@@ -502,7 +519,8 @@ class AdminApprovalView(View):
             launcher_msg=self.launcher_msg,
             offer_title=self.offer_title,
             price_str=f"{self.price_num} {self.currency}",
-            count_str=self.count_str
+            count_str=self.count_str,
+            listing_id=self.listing_id
         )
         await interaction.response.send_modal(modal)
         for item in self.children:
@@ -511,6 +529,10 @@ class AdminApprovalView(View):
 
     @discord.ui.button(label="Mark as SOLD", style=discord.ButtonStyle.danger, emoji="🏷️", disabled=True, row=1)
     async def sold_btn(self, interaction: discord.Interaction, button: Button):
+        try:
+            await set_listing_status(self.listing_id, "SOLD")
+        except Exception as e:
+            return await interaction.response.send_message(f"❌ Could not mark listing as sold in Supabase: `{e}`", ephemeral=True)
         if self.posted_market_message:
             sold_embed = self.posted_market_message.embeds[0]
             sold_embed.title = f"🔴 [SOLD OUT] {self.offer_title.upper()}"
@@ -533,7 +555,7 @@ class AdminApprovalView(View):
                 print(f"Error locking thread: {e}")
 
         button.disabled = True
-        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT in the marketplace!**", view=self)
+        await interaction.response.edit_message(content="🔒 **Account marked as SOLD in Accounts Shop!**", view=self)
         try:
             await self.ticket_channel.send("🎉 **Your account has been officially marked as SOLD! Thank you for selling with Pedrao22k Services.**")
         except:
@@ -707,16 +729,18 @@ HTML_PAGE = """<!DOCTYPE html>
                 <select id="currency">
                     <option value="USD">USD ($)</option>
                     <option value="EUR">EUR (€)</option>
-                    <option value="GBP">GBP (£)</option>
-                    <option value="CAD">CAD ($)</option>
-                    <option value="AUD">AUD ($)</option>
-                    <option value="AED">AED (د.إ)</option>
-                    <option value="SAR">SAR (ر.س)</option>
-                    <option value="DZD">DZD (دج)</option>
                 </select>
             </div>
 
-            <!-- قسم عناصر الحساب المميزة (Categories Checkboxes) -->
+            <label for="category">Primary Shop Category</label>
+            <select id="category" required>
+                <option value="" disabled selected>Select a category</option>
+                <option value="TOP_250">Top 250</option>
+                <option value="NUKES">Nukes</option>
+                <option value="IRIDESCENT">Iridescent</option>
+            </select>
+
+            <!-- Optional account highlights -->
             <div class="checkbox-container">
                 <div class="checkbox-title">
                     <span>DOES YOUR ACCOUNT HAVE ANY OF THESE ITEMS?</span>
@@ -885,6 +909,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const offerTitle = document.getElementById('offerTitle').value.trim();
             const price = document.getElementById('price').value.trim();
             const currency = document.getElementById('currency').value;
+            const category = document.getElementById('category').value;
             const desc = document.getElementById('desc').value.trim();
 
             const selectedItems = [];
@@ -893,7 +918,7 @@ HTML_PAGE = """<!DOCTYPE html>
             });
             const itemsString = selectedItems.length > 0 ? selectedItems.join(' • ') : 'None';
 
-            if (!offerTitle || !price || !desc || !coverFile || secondaryFiles.length === 0) {
+            if (!offerTitle || !price || !category || !desc || !coverFile || secondaryFiles.length === 0) {
                 alert("Please fill in all fields, upload primary cover, and at least one gallery image.");
                 return;
             }
@@ -917,6 +942,7 @@ HTML_PAGE = """<!DOCTYPE html>
             formData.append("offerTitle", offerTitle);
             formData.append("price", price);
             formData.append("currency", currency);
+            formData.append("category", category);
             formData.append("items", itemsString);
             formData.append("description", desc);
 
@@ -997,11 +1023,22 @@ async def handle_finalize_listing(request):
         offer_title = data.get("offerTitle", "Verified COD Account")
         price = data.get("price", "")
         currency = data.get("currency", "USD")
+        category = data.get("category", "")
         items_list = data.get("items", "None")
         description = data.get("description", "")
 
         if not session_id or session_id not in active_web_sessions:
             return web.json_response({"status": "error", "error": "Session expired."}, status=400)
+        if currency not in ("USD", "EUR"):
+            return web.json_response({"status": "error", "error": "Please select USD or EUR."}, status=400)
+        if category not in ("TOP_250", "NUKES", "IRIDESCENT"):
+            return web.json_response({"status": "error", "error": "Please select a valid Shop category."}, status=400)
+        try:
+            price_value = float(price)
+            if price_value <= 0:
+                raise ValueError()
+        except (TypeError, ValueError):
+            return web.json_response({"status": "error", "error": "Please enter a valid price."}, status=400)
 
         session_info = active_web_sessions[session_id]
         cover_path = session_info.get("cover_file")
@@ -1022,7 +1059,15 @@ async def handle_finalize_listing(request):
             if os.path.exists(sp):
                 all_paths.append(sp)
 
-        clean_price_num = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
+        if not cover_path or not secondary_paths:
+            return web.json_response({"status": "error", "error": "Upload a cover image and at least one gallery image."}, status=400)
+        try:
+            listing_id = await create_supabase_listing(seller_id, offer_title, price_value, currency, category, description, all_paths)
+        except Exception as e:
+            print(f"Supabase listing creation error: {e}")
+            return web.json_response({"status": "error", "error": "Could not save your listing to the shop database. Please contact staff and try again."}, status=502)
+
+        clean_price_num = str(price_value)
 
         discord_cdn_urls = []
         for fp in all_paths:
@@ -1064,6 +1109,7 @@ async def handle_finalize_listing(request):
             timestamp=datetime.datetime.utcnow()
         )
         admin_embed.add_field(name="💰 Asking Price", value=f"{clean_price_num} {currency}", inline=False)
+        admin_embed.add_field(name="🗂️ Shop Category", value=category.replace("_", " "), inline=True)
         admin_embed.add_field(name="🌟 Account Highlights", value=f"{items_list}", inline=False)
         admin_embed.add_field(name="📋 Account Details", value=description[:1024], inline=False)
         if discord_cdn_urls:
@@ -1082,7 +1128,8 @@ async def handle_finalize_listing(request):
                 currency=currency,
                 items_list=items_list,
                 description=description,
-                count_str=f"{len(discord_cdn_urls)} proofs"
+                count_str=f"{len(discord_cdn_urls)} proofs",
+                listing_id=listing_id
             )
             await review_channel.send(
                 content=f"🔔 {role_ping} **New Account Submission (Cover Thumbnail Selected):**",
@@ -1256,8 +1303,7 @@ async def setup_market(ctx):
         embed.set_author(name="Pedrao22k Marketplace", icon_url=guild_icon_url)
     embed.set_footer(text="Pedrao22k. | Verified Seller Hub")
     await ctx.send(embed=embed, view=MarketplaceLauncherView())
-    
-print("DISCORD_TOKEN configurado:", bool(os.getenv("DISCORD_TOKEN")))
-print("TOKEN configurado:", bool(os.getenv("TOKEN")))
 
+if not TOKEN:
+    raise RuntimeError("Missing DISCORD_TOKEN environment variable. Configure it in Railway.")
 bot.run(TOKEN)
