@@ -9,7 +9,7 @@ import uuid
 from aiohttp import web
 
 # ======================== بيانات السيرفر والتصنيفات ========================
-TOKEN = os.getenv("TOKEN")
+TOKEN = os.getenv("DISCORD_TOKEN")
 
 WELCOME_CHANNEL_ID = 1552627900191219752        # آيدي روم welcome
 SUPPORT_ROLE_ID = 1552628903481184336            # آيدي رتبة Admin
