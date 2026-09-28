@@ -1256,5 +1256,8 @@ async def setup_market(ctx):
         embed.set_author(name="Pedrao22k Marketplace", icon_url=guild_icon_url)
     embed.set_footer(text="Pedrao22k. | Verified Seller Hub")
     await ctx.send(embed=embed, view=MarketplaceLauncherView())
+    
+print("DISCORD_TOKEN configurado:", bool(os.getenv("DISCORD_TOKEN")))
+print("TOKEN configurado:", bool(os.getenv("TOKEN")))
 
 bot.run(TOKEN)
