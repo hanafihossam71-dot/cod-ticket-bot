@@ -125,9 +125,14 @@ async def create_supabase_listing(listing_id: str, seller_id: int, title: str, p
 async def set_listing_status(listing_id: str, status: str):
     if not listing_id:
         return
+
+    update_data = {"status": status}
+    if status == "PUBLISHED":
+        update_data["published_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
     rows = await supabase_request(
         "PATCH", f"/rest/v1/listings?id=eq.{listing_id}",
-        json_data={"status": status},
+        json_data=update_data,
     )
     if not isinstance(rows, list) or not rows:
         raise RuntimeError("No matching listing was updated in Supabase.")
