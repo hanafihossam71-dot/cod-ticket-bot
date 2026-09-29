@@ -68,45 +68,69 @@ async def supabase_request(method: str, endpoint: str, *, json_data=None, body=N
             except Exception:
                 return text_body
 
-async def create_supabase_listing(seller_id: int, title: str, price: float, currency: str, category: str, description: str, image_paths: list):
-    rows = await supabase_request(
-        "POST", "/rest/v1/listings",
-        json_data={
-            "seller_discord_id": str(seller_id),
-            "title": title,
-            "price": price,
-            "currency": currency,
-            "category": category,
-            "description": description,
-            "status": "PENDING_REVIEW",
-            "sort_order": 0,
-        },
-    )
-    if not isinstance(rows, list) or not rows or not rows[0].get("id"):
-        raise RuntimeError("Supabase did not return the new listing ID.")
-    listing_id = rows[0]["id"]
-    image_rows = []
-    for index, image_path in enumerate(image_paths):
-        if not os.path.isfile(image_path):
-            raise RuntimeError("An uploaded image is missing from the server.")
-        ext = os.path.splitext(image_path)[1].lower() or ".jpg"
-        object_path = f"{listing_id}/{index:02d}-{uuid.uuid4().hex}{ext}"
-        with open(image_path, "rb") as image_file:
-            payload = image_file.read()
-        mime = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/gif" if ext == ".gif" else "image/jpeg"
-        await supabase_request("POST", f"/storage/v1/object/listing-images/{object_path}", body=payload, content_type=mime)
-        image_rows.append({"listing_id": listing_id, "image_url": object_path, "sort_order": index})
-    if image_rows:
-        await supabase_request("POST", "/rest/v1/listing_images", json_data=image_rows)
-    return listing_id
+async def create_supabase_listing(listing_id: str, seller_id: int, title: str, price: float, currency: str, category: str, description: str, image_paths: list):
+    """Create one pending listing and its images; compensate on partial failure."""
+    uploaded_objects = []
+    try:
+        rows = await supabase_request(
+            "POST", "/rest/v1/listings",
+            json_data={
+                "id": listing_id,
+                "seller_discord_id": str(seller_id),
+                "title": title,
+                "price": price,
+                "currency": currency,
+                "category": category,
+                "description": description,
+                "status": "PENDING_REVIEW",
+                "sort_order": 0,
+            },
+        )
+        if not isinstance(rows, list) or not rows or not rows[0].get("id"):
+            raise RuntimeError("Supabase did not return the new listing ID.")
+        image_rows = []
+        for index, image_path in enumerate(image_paths):
+            if not os.path.isfile(image_path):
+                raise RuntimeError("An uploaded image is missing from the server.")
+            ext = os.path.splitext(image_path)[1].lower() or ".jpg"
+            object_path = f"{listing_id}/{index:02d}-{uuid.uuid4().hex}{ext}"
+            with open(image_path, "rb") as image_file:
+                payload = image_file.read()
+            mime = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/gif" if ext == ".gif" else "image/jpeg"
+            await supabase_request("POST", f"/storage/v1/object/listing-images/{object_path}", body=payload, content_type=mime)
+            uploaded_objects.append(object_path)
+            image_rows.append({"listing_id": listing_id, "image_url": object_path, "sort_order": index})
+
+        if image_rows:
+            await supabase_request("POST", "/rest/v1/listing_images", json_data=image_rows)
+        return listing_id
+    except Exception:
+        # Best-effort rollback so a failed upload does not leave a half-created offer.
+        if uploaded_objects:
+            try:
+                await supabase_request(
+                    "DELETE", "/storage/v1/object/listing-images",
+                    json_data={"prefixes": uploaded_objects},
+                )
+            except Exception as cleanup_error:
+                print(f"Supabase storage rollback error for {listing_id}: {cleanup_error}")
+        # The POST may have reached Supabase even if the client timed out,
+        # so attempt deletion by the stable session UUID in every failure case.
+        try:
+            await supabase_request("DELETE", f"/rest/v1/listings?id=eq.{listing_id}")
+        except Exception as cleanup_error:
+            print(f"Supabase listing rollback error for {listing_id}: {cleanup_error}")
+        raise
 
 async def set_listing_status(listing_id: str, status: str):
     if not listing_id:
         return
-    await supabase_request(
+    rows = await supabase_request(
         "PATCH", f"/rest/v1/listings?id=eq.{listing_id}",
         json_data={"status": status},
     )
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("No matching listing was updated in Supabase.")
 
 os.makedirs("uploaded_screenshots", exist_ok=True)
 active_web_sessions = {}
@@ -272,7 +296,7 @@ class TicketLauncherView(View):
         self.add_item(TicketSelect())
 
 class RejectReasonModal(Modal, title="Listing Rejection Reason"):
-    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = "", listing_id: str = ""):
+    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = "", listing_id: str = "", review_message: discord.Message = None, approval_view: View = None):
         super().__init__()
         self.seller = seller
         self.ticket_channel = ticket_channel
@@ -281,6 +305,8 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
         self.price_str = price_str
         self.count_str = count_str
         self.listing_id = listing_id
+        self.review_message = review_message
+        self.approval_view = approval_view
         self.reason_input = TextInput(
             label="Reason for Declining",
             style=discord.TextStyle.paragraph,
@@ -296,6 +322,14 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
             await set_listing_status(self.listing_id, "REJECTED")
         except Exception as e:
             return await interaction.response.send_message(f"❌ Could not update listing status in Supabase: `{e}`", ephemeral=True)
+        if self.approval_view and self.review_message:
+            try:
+                for item in self.approval_view.children:
+                    item.disabled = True
+                await self.review_message.edit(content="❌ **Listing was rejected by staff.**", view=self.approval_view)
+            except Exception as e:
+                print(f"Error disabling review controls after rejection: {e}")
+
         await interaction.response.send_message(f"✅ Rejection reason sent to seller: `{reason}`", ephemeral=True)
 
         if self.launcher_msg:
@@ -520,12 +554,11 @@ class AdminApprovalView(View):
             offer_title=self.offer_title,
             price_str=f"{self.price_num} {self.currency}",
             count_str=self.count_str,
-            listing_id=self.listing_id
+            listing_id=self.listing_id,
+            review_message=interaction.message,
+            approval_view=self
         )
         await interaction.response.send_modal(modal)
-        for item in self.children:
-            item.disabled = True
-        await interaction.message.edit(content="❌ **Listing was rejected by staff.**", view=self)
 
     @discord.ui.button(label="Mark as SOLD", style=discord.ButtonStyle.danger, emoji="🏷️", disabled=True, row=1)
     async def sold_btn(self, interaction: discord.Interaction, button: Button):
@@ -624,7 +657,14 @@ class MarketplaceLauncherView(View):
             "launcher_msg": launcher_msg,
             "created_at": datetime.datetime.utcnow(),
             "cover_file": None,
-            "secondary_files": []
+            "secondary_files": [],
+            "finalize_lock": asyncio.Lock(),
+            "listing_id": None,
+            "all_paths": None,
+            "discord_cdn_urls": [],
+            "discord_uploaded_paths": [],
+            "review_dispatched": False,
+            "finalized": False
         }
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -1016,9 +1056,8 @@ async def handle_upload_images_only(request):
         print(f"Upload error: {e}")
         return web.json_response({"status": "error", "error": str(e)}, status=500)
 
-async def handle_finalize_listing(request):
+async def _handle_finalize_listing(request, data):
     try:
-        data = await request.post()
         session_id = data.get("session")
         offer_title = data.get("offerTitle", "Verified COD Account")
         price = data.get("price", "")
@@ -1052,30 +1091,51 @@ async def handle_finalize_listing(request):
         support_role = ticket_channel.guild.get_role(SUPPORT_ROLE_ID) if ticket_channel else None
         seller = bot.get_user(seller_id) or await bot.fetch_user(seller_id)
 
-        all_paths = []
-        if cover_path and os.path.exists(cover_path):
-            all_paths.append(cover_path)
-        for sp in secondary_paths:
-            if os.path.exists(sp):
-                all_paths.append(sp)
+        if not ticket_channel or not review_channel:
+            return web.json_response({"status": "error", "error": "The seller ticket or staff review channel is unavailable. Please contact staff."}, status=503)
 
-        if not cover_path or not secondary_paths:
+        if session_info.get("finalized"):
+            return web.json_response({"status": "ok", "count": len(session_info.get("discord_cdn_urls", []))})
+
+        if session_info.get("all_paths") is None:
+            all_paths = []
+            if cover_path and os.path.isfile(cover_path):
+                all_paths.append(cover_path)
+            for sp in secondary_paths:
+                if os.path.isfile(sp):
+                    all_paths.append(sp)
+            session_info["all_paths"] = all_paths
+        all_paths = session_info["all_paths"]
+
+        if not cover_path or len(all_paths) < 2:
             return web.json_response({"status": "error", "error": "Upload a cover image and at least one gallery image."}, status=400)
-        try:
-            listing_id = await create_supabase_listing(seller_id, offer_title, price_value, currency, category, description, all_paths)
-        except Exception as e:
-            print(f"Supabase listing creation error: {e}")
-            return web.json_response({"status": "error", "error": "Could not save your listing to the shop database. Please contact staff and try again."}, status=502)
+
+        # A stable UUID per portal session prevents duplicate records on a retry.
+        listing_id = session_info.get("listing_id") or str(uuid.uuid5(uuid.NAMESPACE_URL, f"pedrao22k-listing:{session_id}"))
+        if not session_info.get("listing_id"):
+            try:
+                await create_supabase_listing(listing_id, seller_id, offer_title, price_value, currency, category, description, all_paths)
+                session_info["listing_id"] = listing_id
+            except Exception as e:
+                print(f"Supabase listing creation error: {e}")
+                return web.json_response({"status": "error", "error": "Could not save your listing and screenshots to the shop database. Please contact staff before retrying."}, status=502)
 
         clean_price_num = str(price_value)
-
-        discord_cdn_urls = []
+        discord_cdn_urls = session_info["discord_cdn_urls"]
+        uploaded_paths = set(session_info["discord_uploaded_paths"])
         for fp in all_paths:
-            files_to_send = [discord.File(fp)]
-            batch_msg = await review_channel.send(content=f"📸 *Proof for {seller.mention}:*", files=files_to_send)
+            if fp in uploaded_paths:
+                continue
+            if not os.path.isfile(fp):
+                return web.json_response({"status": "error", "error": "A screenshot is missing during submission. Please contact staff so we can recover the listing."}, status=409)
+            batch_msg = await review_channel.send(content=f"📸 *Proof for {seller.mention}:*", file=discord.File(fp))
             for att in batch_msg.attachments:
                 discord_cdn_urls.append(att.url)
-            os.remove(fp)
+            session_info["discord_uploaded_paths"].append(fp)
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
 
         submitted_embed = discord.Embed(
             title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
@@ -1096,12 +1156,6 @@ async def handle_finalize_listing(request):
             submitted_embed.set_thumbnail(url=seller.display_avatar.url)
         submitted_embed.set_footer(text="Pedrao22k Services • Awaiting Review")
 
-        try:
-            await launcher_msg.edit(embed=submitted_embed, view=None)
-            await ticket_channel.send(f"🔔 {seller.mention} **Your offer was submitted! Please wait for staff review.** ⏳")
-        except Exception as e:
-            print(f"Error updating launcher message: {e}")
-
         admin_embed = discord.Embed(
             title=f"📥 {offer_title}",
             description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
@@ -1115,7 +1169,7 @@ async def handle_finalize_listing(request):
         if discord_cdn_urls:
             admin_embed.set_image(url=discord_cdn_urls[0])
 
-        if review_channel:
+        if not session_info.get("review_dispatched"):
             role_ping = support_role.mention if support_role else "@here"
             approval_view = AdminApprovalView(
                 seller=seller,
@@ -1136,12 +1190,32 @@ async def handle_finalize_listing(request):
                 embed=admin_embed,
                 view=approval_view
             )
+            session_info["review_dispatched"] = True
 
-        active_web_sessions.pop(session_id, None)
+        try:
+            await launcher_msg.edit(embed=submitted_embed, view=None)
+            await ticket_channel.send(f"🔔 {seller.mention} **Your offer was submitted! Please wait for staff review.** ⏳")
+        except Exception as e:
+            print(f"Error updating seller submission messages: {e}")
+
+        session_info["finalized"] = True
         return web.json_response({"status": "ok", "count": len(discord_cdn_urls)})
     except Exception as e:
         print(f"Finalize error: {e}")
-        return web.json_response({"status": "error", "error": str(e)}, status=500)
+        return web.json_response({"status": "error", "error": "Submission could not be completed. Please retry once; if it continues, contact staff."}, status=500)
+
+async def handle_finalize_listing(request):
+    try:
+        data = await request.post()
+    except Exception:
+        return web.json_response({"status": "error", "error": "Invalid submission data."}, status=400)
+    session_id = data.get("session")
+    session_info = active_web_sessions.get(session_id)
+    if not session_info:
+        return web.json_response({"status": "error", "error": "Session expired. Please reopen the seller portal."}, status=400)
+    # Serialize repeated clicks/retries for this portal session.
+    async with session_info["finalize_lock"]:
+        return await _handle_finalize_listing(request, data)
 
 async def session_cleaner_task():
     while True:
