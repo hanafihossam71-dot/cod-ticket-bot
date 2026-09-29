@@ -1,15 +1,19 @@
 import discord
 from discord.ext import commands
+from discord import app_commands
 from discord.ui import Button, View, Select, Modal, TextInput
 import asyncio
 import io
 import datetime
 import os
 import uuid
+import re
+import aiohttp
 from aiohttp import web
+from typing import Optional
 
 # ======================== بيانات السيرفر والتصنيفات ========================
-TOKEN = os.getenv("DISCORD_TOKEN")
+TOKEN = os.environ.get("DISCORD_TOKEN", "")
 
 WELCOME_CHANNEL_ID = 1552627900191219752        # آيدي روم welcome
 SUPPORT_ROLE_ID = 1552628903481184336            # آيدي رتبة Admin
@@ -21,7 +25,12 @@ REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإد�
 VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
 WEB_PORT = int(os.environ.get("PORT", 8080))
-BASE_WEB_URL = "https://cod-ticket-bot-production.up.railway.app"
+BASE_WEB_URL = os.environ.get("BASE_WEB_URL", "https://cod-ticket-bot-production.up.railway.app")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+SHOP_URL = os.environ.get("SHOP_URL", "https://projeto-optmus-prime.vercel.app").rstrip("/")
+DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "")
+DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
 
 CRYPTO_ADDRESSES = {
     "USDT_TRC20": "TYourTRC20AddressHereXXXXXXXXXXXXXX",
@@ -37,6 +46,209 @@ intents.guilds = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+async def supabase_request(method: str, endpoint: str, *, json_data=None, body=None, content_type=None):
+    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+        raise RuntimeError("Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Railway.")
+    headers = {
+        "apikey": SUPABASE_SERVICE_ROLE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
+    }
+    if json_data is not None:
+        headers["Content-Type"] = "application/json"
+        headers["Prefer"] = "return=representation"
+    if content_type:
+        headers["Content-Type"] = content_type
+        headers["x-upsert"] = "false"
+    timeout = aiohttp.ClientTimeout(total=90)
+    async with aiohttp.ClientSession(timeout=timeout) as client:
+        async with client.request(method, f"{SUPABASE_URL}{endpoint}", headers=headers, json=json_data, data=body) as response:
+            text_body = await response.text()
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(f"Supabase request failed ({response.status}): {text_body[:500]}")
+            if not text_body:
+                return None
+            try:
+                return await response.json()
+            except Exception:
+                return text_body
+
+async def create_supabase_listing(listing_id: str, seller_id: int, title: str, price: float, currency: str, category: str, description: str, image_paths: list):
+    """Create one pending listing and its images; compensate on partial failure."""
+    uploaded_objects = []
+    try:
+        rows = await supabase_request(
+            "POST", "/rest/v1/listings",
+            json_data={
+                "id": listing_id,
+                "seller_discord_id": str(seller_id),
+                "title": title,
+                "price": price,
+                "currency": currency,
+                "category": category,
+                "description": description,
+                "status": "PENDING_REVIEW",
+                "sort_order": 0,
+            },
+        )
+        if not isinstance(rows, list) or not rows or not rows[0].get("id"):
+            raise RuntimeError("Supabase did not return the new listing ID.")
+        image_rows = []
+        for index, image_path in enumerate(image_paths):
+            if not os.path.isfile(image_path):
+                raise RuntimeError("An uploaded image is missing from the server.")
+            ext = os.path.splitext(image_path)[1].lower() or ".jpg"
+            object_path = f"{listing_id}/{index:02d}-{uuid.uuid4().hex}{ext}"
+            with open(image_path, "rb") as image_file:
+                payload = image_file.read()
+            mime = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/gif" if ext == ".gif" else "image/jpeg"
+            await supabase_request("POST", f"/storage/v1/object/listing-images/{object_path}", body=payload, content_type=mime)
+            uploaded_objects.append(object_path)
+            image_rows.append({"listing_id": listing_id, "image_url": object_path, "sort_order": index})
+
+        if image_rows:
+            await supabase_request("POST", "/rest/v1/listing_images", json_data=image_rows)
+        return listing_id
+    except Exception:
+        # Best-effort rollback so a failed upload does not leave a half-created offer.
+        if uploaded_objects:
+            try:
+                await supabase_request(
+                    "DELETE", "/storage/v1/object/listing-images",
+                    json_data={"prefixes": uploaded_objects},
+                )
+            except Exception as cleanup_error:
+                print(f"Supabase storage rollback error for {listing_id}: {cleanup_error}")
+        # The POST may have reached Supabase even if the client timed out,
+        # so attempt deletion by the stable session UUID in every failure case.
+        try:
+            await supabase_request("DELETE", f"/rest/v1/listings?id=eq.{listing_id}")
+        except Exception as cleanup_error:
+            print(f"Supabase listing rollback error for {listing_id}: {cleanup_error}")
+        raise
+
+async def set_listing_status(listing_id: str, status: str):
+    if not listing_id:
+        return
+
+    update_data = {"status": status}
+    if status == "PUBLISHED":
+        update_data["published_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    rows = await supabase_request(
+        "PATCH", f"/rest/v1/listings?id=eq.{listing_id}",
+        json_data=update_data,
+    )
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("No matching listing was updated in Supabase.")
+
+async def fetch_listing_by_offer_number(offer_number: int, *, published_only: bool = False):
+    status_filter = "&status=eq.PUBLISHED" if published_only else ""
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/listings?offer_number=eq.{offer_number}{status_filter}&select=id,offer_number,title,price,currency,status&limit=1",
+    )
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    return None
+
+async def fetch_listing_by_id(listing_id: str, *, published_only: bool = False):
+    status_filter = "&status=eq.PUBLISHED" if published_only else ""
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/listings?id=eq.{listing_id}{status_filter}&select=id,offer_number,title,price,currency,status&limit=1",
+    )
+    if isinstance(rows, list) and rows:
+        return rows[0]
+    return None
+
+def normalize_offer_number(value: str | int | None) -> Optional[int]:
+    if value is None:
+        return None
+    match = re.search(r"(\d+)", str(value))
+    return int(match.group(1)) if match else None
+
+def format_offer_id(offer_number: int) -> str:
+    return f"{int(offer_number):02d}#"
+
+def format_listing_price(listing: dict) -> str:
+    currency = listing.get("currency", "USD")
+    symbol = "$" if currency == "USD" else "€" if currency == "EUR" else ""
+    try:
+        number = float(listing.get("price", 0))
+        amount = f"{number:,.0f}" if number.is_integer() else f"{number:,.2f}"
+    except Exception:
+        amount = str(listing.get("price", ""))
+    return f"{symbol}{amount} {currency}".strip()
+
+def purchase_ticket_topic(listing_id: str, offer_number: int, buyer_id: int) -> str:
+    return f"pedrao22k_purchase;listing_id={listing_id};offer_number={offer_number};buyer_id={buyer_id}"
+
+def parse_purchase_ticket_topic(topic: Optional[str]) -> Optional[dict]:
+    if not topic or not topic.startswith("pedrao22k_purchase;"):
+        return None
+    result = {}
+    for piece in topic.split(";")[1:]:
+        if "=" in piece:
+            key, value = piece.split("=", 1)
+            result[key] = value
+    if not result.get("listing_id") or not result.get("offer_number") or not result.get("buyer_id"):
+        return None
+    try:
+        result["offer_number"] = int(result["offer_number"])
+        result["buyer_id"] = int(result["buyer_id"])
+    except ValueError:
+        return None
+    return result
+
+def is_staff_member(member: discord.Member) -> bool:
+    return bool(member.guild_permissions.administrator or any(role.id == SUPPORT_ROLE_ID for role in member.roles))
+
+async def archive_and_delete_ticket(channel: discord.TextChannel, closed_by, *, reason: str, delay: int = 5):
+    log_text = "=== PEDRAO22K. TICKET TRANSCRIPT ===\n"
+    log_text += f"Ticket Name: {channel.name}\n"
+    log_text += f"Closed by: {closed_by} ({getattr(closed_by, 'id', 'system')})\n"
+    log_text += f"Reason: {reason}\n"
+    log_text += f"Closed At: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+    log_text += "====================================\n\n"
+
+    try:
+        async for message in channel.history(limit=500, oldest_first=True):
+            timestamp = message.created_at.strftime('%Y-%m-%d %H:%M:%S')
+            content = message.clean_content
+            if message.attachments:
+                content += " [Attachments: " + ", ".join(a.url for a in message.attachments) + "]"
+            log_text += f"[{timestamp}] {message.author}: {content}\n"
+    except Exception as e:
+        log_text += f"[Transcript read error: {e}]\n"
+
+    logs_channel = channel.guild.get_channel(TICKET_LOGS_CHANNEL_ID)
+    if logs_channel:
+        try:
+            transcript_file = discord.File(io.BytesIO(log_text.encode("utf-8")), filename=f"transcript-{channel.name}.txt")
+            log_embed = discord.Embed(
+                title="📑 TICKET CLOSED & ARCHIVED",
+                description=f"Ticket **#{channel.name}** was archived.",
+                color=0xEF4444,
+                timestamp=datetime.datetime.utcnow(),
+            )
+            mention = getattr(closed_by, "mention", str(closed_by))
+            log_embed.add_field(name="Closed By", value=mention, inline=True)
+            log_embed.add_field(name="Reason", value=reason, inline=True)
+            log_embed.add_field(name="Channel ID", value=f"`{channel.id}`", inline=False)
+            log_embed.set_footer(text="Pedrao22k Audit Logs")
+            await logs_channel.send(embed=log_embed, file=transcript_file)
+        except Exception as e:
+            print(f"Ticket transcript log error for {channel.id}: {e}")
+
+    if delay:
+        await asyncio.sleep(delay)
+    try:
+        await channel.delete(reason=reason)
+    except Exception as e:
+        print(f"Ticket delete error for {channel.id}: {e}")
+
+purchase_ticket_lock = asyncio.Lock()
 
 os.makedirs("uploaded_screenshots", exist_ok=True)
 active_web_sessions = {}
@@ -94,38 +306,7 @@ class ConfirmCloseView(View):
     @discord.ui.button(label="Confirm Close", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def confirm_close(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_message("⏳ **Archiving transcript and deleting channel in 5 seconds...**")
-        channel = interaction.channel
-
-        log_text = "=== PEDRAO22K. TICKET TRANSCRIPT ===\n"
-        log_text += f"Ticket Name: {channel.name}\n"
-        log_text += f"Closed by: {interaction.user} ({interaction.user.id})\n"
-        log_text += f"Closed At: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
-        log_text += "====================================\n\n"
-
-        async for message in channel.history(limit=500, oldest_first=True):
-            timestamp = message.created_at.strftime('%Y-%m-%d %H:%M:%S')
-            content = message.clean_content
-            if message.attachments:
-                attachments_urls = " [Attachments: " + ", ".join([a.url for a in message.attachments]) + "]"
-                content += attachments_urls
-            log_text += f"[{timestamp}] {message.author}: {content}\n"
-
-        transcript_file = discord.File(io.BytesIO(log_text.encode('utf-8')), filename=f"transcript-{channel.name}.txt")
-        logs_channel = interaction.guild.get_channel(TICKET_LOGS_CHANNEL_ID)
-        if logs_channel:
-            log_embed = discord.Embed(
-                title="📑 TICKET CLOSED & ARCHIVED",
-                description=f"Ticket **#{channel.name}** was archived.",
-                color=0xEF4444,
-                timestamp=datetime.datetime.utcnow()
-            )
-            log_embed.add_field(name="Closed By", value=f"{interaction.user.mention} (`{interaction.user.id}`)", inline=True)
-            log_embed.add_field(name="Channel ID", value=f"`{channel.id}`", inline=True)
-            log_embed.set_footer(text="Pedrao22k Audit Logs")
-            await logs_channel.send(embed=log_embed, file=transcript_file)
-
-        await asyncio.sleep(5)
-        await channel.delete()
+        await archive_and_delete_ticket(interaction.channel, interaction.user, reason="Manual ticket closure", delay=5)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel_close(self, interaction: discord.Interaction, button: Button):
@@ -202,7 +383,7 @@ class TicketLauncherView(View):
         self.add_item(TicketSelect())
 
 class RejectReasonModal(Modal, title="Listing Rejection Reason"):
-    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = ""):
+    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = "", listing_id: str = "", review_message: discord.Message = None, approval_view: View = None):
         super().__init__()
         self.seller = seller
         self.ticket_channel = ticket_channel
@@ -210,6 +391,9 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
         self.offer_title = offer_title
         self.price_str = price_str
         self.count_str = count_str
+        self.listing_id = listing_id
+        self.review_message = review_message
+        self.approval_view = approval_view
         self.reason_input = TextInput(
             label="Reason for Declining",
             style=discord.TextStyle.paragraph,
@@ -221,6 +405,18 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
 
     async def on_submit(self, interaction: discord.Interaction):
         reason = self.reason_input.value.strip()
+        try:
+            await set_listing_status(self.listing_id, "REJECTED")
+        except Exception as e:
+            return await interaction.response.send_message(f"❌ Could not update listing status in Supabase: `{e}`", ephemeral=True)
+        if self.approval_view and self.review_message:
+            try:
+                for item in self.approval_view.children:
+                    item.disabled = True
+                await self.review_message.edit(content="❌ **Listing was rejected by staff.**", view=self.approval_view)
+            except Exception as e:
+                print(f"Error disabling review controls after rejection: {e}")
+
         await interaction.response.send_message(f"✅ Rejection reason sent to seller: `{reason}`", ephemeral=True)
 
         if self.launcher_msg:
@@ -352,7 +548,7 @@ class MarketplaceCarouselView(View):
         await interaction.response.send_message(f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}", ephemeral=True)
 
 class AdminApprovalView(View):
-    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", currency: str = "USD", items_list: str = "None", description: str = "", count_str: str = ""):
+    def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", currency: str = "USD", items_list: str = "None", description: str = "", count_str: str = "", listing_id: str = ""):
         super().__init__(timeout=None)
         self.seller = seller
         self.embed_data = embed_data
@@ -365,6 +561,7 @@ class AdminApprovalView(View):
         self.items_list = items_list
         self.description = description
         self.count_str = count_str
+        self.listing_id = listing_id
         self.current_index = 0
         self.posted_market_message = None
         self.created_thread = None
@@ -400,80 +597,22 @@ class AdminApprovalView(View):
             self.update_carousel()
             await interaction.response.edit_message(embed=self.embed_data, view=self)
 
-    @discord.ui.button(label="Approve & Post to Forum", style=discord.ButtonStyle.success, emoji="✅", row=1)
+    @discord.ui.button(label="Approve & Publish to Shop", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def approve(self, interaction: discord.Interaction, button: Button):
         await interaction.response.defer(ephemeral=True)
-        
         try:
-            market_channel = interaction.guild.get_channel(MARKETPLACE_CHANNEL_ID)
-            if not market_channel:
-                return await interaction.followup.send("❌ Marketplace forum channel not found!", ephemeral=True)
-
-            thread_title = f"⚡ [{self.price_num} {self.currency}] • {self.offer_title}"
-            if len(thread_title) > 95:
-                thread_title = thread_title[:95]
-
-            pro_market_embed = discord.Embed(
-                title=f"👑 ┃ {self.offer_title.upper()}",
-                description=(
-                    "```prolog\n"
-                    "💎 OFFICIAL PEDRAO22K VERIFIED MARKETPLACE 💎\n"
-                    "==============================================\n"
-                    "• STATUS : 🟢 100% VERIFIED & READY FOR INSTANT ESCROW\n"
-                    "• SAFETY : 🛡️ SECURE ADMIN TRANSFER & FULL ACCESS\n"
-                    "```"
-                ),
-                color=0xFFB800,
-                timestamp=datetime.datetime.utcnow()
-            )
-            pro_market_embed.add_field(name="💰 Asking Price", value=f"> **`{self.price_num} {self.currency}`** *(Crypto Payment)*", inline=True)
-            pro_market_embed.add_field(name="🎮 Game / Platform", value="> **`Call of Duty • Warzone / MW3`**", inline=True)
-            pro_market_embed.add_field(name="🌟 Account Highlights", value=f"> **`{self.items_list}`**", inline=False)
-            pro_market_embed.add_field(name="📋 Account Details & Overview", value=f"```yaml\n{self.description}\n```", inline=False)
-            pro_market_embed.set_footer(text="Pedrao22k Services • Click 'Buy This Account' below to securely purchase")
-
-            if self.images:
-                pro_market_embed.set_image(url=self.images[0])
-
-            market_view = MarketplaceCarouselView(images=self.images, embed_data=pro_market_embed, is_sold=False)
-
-            available_tag = None
-            if hasattr(market_channel, 'available_tags'):
-                for tag in market_channel.available_tags:
-                    if "avail" in tag.name.lower():
-                        available_tag = tag
-                        break
-            applied_tags = [available_tag] if available_tag else []
-
-            if isinstance(market_channel, discord.ForumChannel):
-                thread_with_message = await market_channel.create_thread(
-                    name=thread_title,
-                    embed=pro_market_embed,
-                    view=market_view,
-                    applied_tags=applied_tags
-                )
-                self.posted_market_message = thread_with_message.message
-                self.created_thread = thread_with_message.thread
-                webhook_msg_url = thread_with_message.message.jump_url
-            else:
-                payload_message = await market_channel.send(embed=pro_market_embed, view=market_view)
-                self.posted_market_message = payload_message
-                webhook_msg_url = payload_message.jump_url
-
+            await set_listing_status(self.listing_id, "PUBLISHED")
             button.disabled = True
             self.reject.disabled = True
-            self.sold_btn.disabled = False
-            
-            await interaction.message.edit(content="✅ **Listing Published Successfully with Luxury Layout!**", view=self)
-            await interaction.followup.send("✅ **Listing successfully published to the forum marketplace!**", ephemeral=True)
-
+            await interaction.message.edit(content="✅ **Listing approved and published to Accounts Shop!**", view=self)
+            await interaction.followup.send(f"✅ Listing is now live in the [Accounts Shop]({SHOP_URL}).", ephemeral=True)
             if self.launcher_msg:
                 try:
                     approved_embed = discord.Embed(
-                        title="🎉 LISTING APPROVED & PUBLISHED ON MARKETPLACE",
+                        title="🎉 LISTING APPROVED & PUBLISHED ON ACCOUNTS SHOP",
                         description=(
-                            f"Great news {self.seller.mention}! Your Call of Duty account listing has been verified and **officially published** to the marketplace.\n\n"
-                            f"🔗 **Listing URL:** [Click to View on Market]({webhook_msg_url})\n"
+                            f"Great news {self.seller.mention}! Your account listing has been approved and is now visible in our Accounts Shop.\n\n"
+                            f"🔗 **Accounts Shop:** [View Shop]({SHOP_URL})"
                         ),
                         color=0x10B981,
                         timestamp=datetime.datetime.utcnow()
@@ -484,15 +623,13 @@ class AdminApprovalView(View):
                     await self.launcher_msg.edit(embed=approved_embed, view=None)
                 except Exception as e:
                     print(f"Error editing launcher to approved: {e}")
-
             try:
-                await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your listing is now live!** Check it here: {webhook_msg_url}")
-            except:
+                await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your account has been approved and is now live in the [Accounts Shop]({SHOP_URL}).**")
+            except Exception:
                 pass
-
         except Exception as e:
             print(f"Approval error: {e}")
-            await interaction.followup.send(f"❌ An error occurred during publishing: `{e}`", ephemeral=True)
+            await interaction.followup.send(f"❌ Could not publish listing: `{e}`", ephemeral=True)
 
     @discord.ui.button(label="Reject Listing", style=discord.ButtonStyle.danger, emoji="❌", row=1)
     async def reject(self, interaction: discord.Interaction, button: Button):
@@ -502,42 +639,241 @@ class AdminApprovalView(View):
             launcher_msg=self.launcher_msg,
             offer_title=self.offer_title,
             price_str=f"{self.price_num} {self.currency}",
-            count_str=self.count_str
+            count_str=self.count_str,
+            listing_id=self.listing_id,
+            review_message=interaction.message,
+            approval_view=self
         )
         await interaction.response.send_modal(modal)
+
+
+class SoldConfirmationView(View):
+    def __init__(self, requester_id: int, listing: dict, source_channel_id: Optional[int]):
+        super().__init__(timeout=60)
+        self.requester_id = requester_id
+        self.listing = listing
+        self.source_channel_id = source_channel_id
+
+    @discord.ui.button(label="Confirm Sold", style=discord.ButtonStyle.danger, emoji="✅")
+    async def confirm_sold(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.requester_id or not isinstance(interaction.user, discord.Member) or not is_staff_member(interaction.user):
+            return await interaction.response.send_message("❌ You are not allowed to confirm this action.", ephemeral=True)
+
+        await interaction.response.defer(ephemeral=True)
+        listing_id = self.listing["id"]
+        offer_number = int(self.listing["offer_number"])
+        try:
+            current = await fetch_listing_by_offer_number(offer_number)
+            if not current:
+                return await interaction.followup.send(f"❌ Account {format_offer_id(offer_number)} was not found.", ephemeral=True)
+            if current.get("status") == "SOLD":
+                return await interaction.followup.send(f"⚠️ Account {format_offer_id(offer_number)} is already marked as sold.", ephemeral=True)
+            await set_listing_status(listing_id, "SOLD")
+        except Exception as e:
+            return await interaction.followup.send(f"❌ Could not mark {format_offer_id(offer_number)} as sold: `{e}`", ephemeral=True)
+
+        sold_embed = discord.Embed(
+            title="ACCOUNT SOLD",
+            description="This account has already been sold and is no longer available.\nThis ticket will now be closed.",
+            color=0xEF4444,
+            timestamp=datetime.datetime.utcnow(),
+        )
+
+        category = interaction.guild.get_channel(TICKET_CATEGORY_ID) if interaction.guild else None
+        close_tasks = []
+        if isinstance(category, discord.CategoryChannel):
+            for channel in list(category.text_channels):
+                meta = parse_purchase_ticket_topic(channel.topic)
+                if not meta or meta.get("offer_number") != offer_number:
+                    continue
+                if self.source_channel_id and channel.id == self.source_channel_id:
+                    continue
+                try:
+                    await channel.send(embed=sold_embed)
+                except Exception as e:
+                    print(f"Could not send sold notice to {channel.id}: {e}")
+                close_tasks.append(archive_and_delete_ticket(channel, interaction.user, reason=f"Account {format_offer_id(offer_number)} sold", delay=5))
+
+        if close_tasks:
+            asyncio.ensure_future(asyncio.gather(*close_tasks))
+
         for item in self.children:
             item.disabled = True
-        await interaction.message.edit(content="❌ **Listing was rejected by staff.**", view=self)
-
-    @discord.ui.button(label="Mark as SOLD", style=discord.ButtonStyle.danger, emoji="🏷️", disabled=True, row=1)
-    async def sold_btn(self, interaction: discord.Interaction, button: Button):
-        if self.posted_market_message:
-            sold_embed = self.posted_market_message.embeds[0]
-            sold_embed.title = f"🔴 [SOLD OUT] {self.offer_title.upper()}"
-            sold_embed.color = 0x475569
-            sold_embed.set_footer(text="Pedrao22k. | 🔒 This account has been successfully sold.")
-
-            sold_view = MarketplaceCarouselView(images=self.images, embed_data=sold_embed, is_sold=True)
-            await self.posted_market_message.edit(embed=sold_embed, view=sold_view)
-
-        if hasattr(self, 'created_thread') and self.created_thread:
-            try:
-                sold_tag = None
-                for tag in self.created_thread.parent.available_tags:
-                    if "close" in tag.name.lower() or "sold" in tag.name.lower():
-                        sold_tag = tag
-                        break
-                if sold_tag:
-                    await self.created_thread.edit(applied_tags=[sold_tag], locked=True)
-            except Exception as e:
-                print(f"Error locking thread: {e}")
-
-        button.disabled = True
-        await interaction.response.edit_message(content="🔒 **Account marked as SOLD OUT in the marketplace!**", view=self)
         try:
-            await self.ticket_channel.send("🎉 **Your account has been officially marked as SOLD! Thank you for selling with Pedrao22k Services.**")
-        except:
+            await interaction.message.edit(view=self)
+        except Exception:
             pass
+
+        await interaction.followup.send(
+            f"✅ **{format_offer_id(offer_number)} - {self.listing['title']}** has been marked as sold. "
+            "It has been removed from the Accounts Shop. Other open tickets for this account are being closed.",
+            ephemeral=True,
+        )
+
+        if self.source_channel_id:
+            source_channel = interaction.guild.get_channel(self.source_channel_id)
+            if isinstance(source_channel, discord.TextChannel):
+                try:
+                    await source_channel.send(f"✅ **{format_offer_id(offer_number)} has been marked as SOLD by {interaction.user.mention}.**")
+                except Exception:
+                    pass
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
+    async def cancel_sold(self, interaction: discord.Interaction, button: Button):
+        if interaction.user.id != self.requester_id:
+            return await interaction.response.send_message("❌ Only the staff member who started this action can cancel it.", ephemeral=True)
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="❌ Sold action cancelled.", embed=None, view=self)
+
+async def get_discord_user_from_access_token(access_token: str):
+    timeout = aiohttp.ClientTimeout(total=15)
+    async with aiohttp.ClientSession(timeout=timeout) as client:
+        async with client.get(
+            "https://discord.com/api/v10/users/@me",
+            headers={"Authorization": f"Bearer {access_token}"},
+        ) as response:
+            if response.status != 200:
+                raise RuntimeError("Discord authentication failed.")
+            return await response.json()
+
+async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
+    category = bot.get_channel(TICKET_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        raise RuntimeError("Purchase ticket category was not found.")
+    guild = category.guild
+    buyer = guild.get_member(buyer_id)
+    if buyer is None:
+        try:
+            buyer = await guild.fetch_member(buyer_id)
+        except Exception:
+            raise RuntimeError("Buyer is not a member of this Discord server.")
+
+    listing_id = str(listing["id"])
+    offer_number = int(listing["offer_number"])
+
+    async with purchase_ticket_lock:
+        for channel in category.text_channels:
+            meta = parse_purchase_ticket_topic(channel.topic)
+            if meta and meta.get("listing_id") == listing_id and meta.get("buyer_id") == buyer_id:
+                return channel, True
+
+        support_role = guild.get_role(SUPPORT_ROLE_ID)
+        clean_user_name = re.sub(r"[^a-z0-9-]", "", buyer.name.lower().replace(" ", "-"))[:28] or str(buyer.id)[-6:]
+        channel_name = f"buy-account-{offer_number:02d}-{clean_user_name}"[:100]
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            buyer: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
+        if support_role:
+            overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True)
+
+        channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            topic=purchase_ticket_topic(listing_id, offer_number, buyer_id),
+            overwrites=overwrites,
+            reason=f"Accounts Shop contact for {format_offer_id(offer_number)}",
+        )
+
+        view_offer_url = f"{SHOP_URL}/?offer={offer_number:02d}"
+        embed = discord.Embed(
+            title=f"{format_offer_id(offer_number)} - {listing['title']}",
+            description=(
+                f"**Price:** {format_listing_price(listing)}\n"
+                f"**Buyer:** {buyer.mention}\n\n"
+                "This ticket was created from the Accounts Shop."
+            ),
+            color=0xF59E0B,
+            timestamp=datetime.datetime.utcnow(),
+        )
+        embed.set_footer(text="Pedrao22k Accounts Shop")
+        link_view = View(timeout=None)
+        link_view.add_item(Button(label="View Offer", style=discord.ButtonStyle.link, url=view_offer_url, emoji="👁️"))
+        role_ping = support_role.mention if support_role else ""
+        await channel.send(content=f"{buyer.mention} {role_ping}", embed=embed, view=link_view)
+        await channel.send(view=CloseTicketView())
+        return channel, False
+
+async def handle_discord_exchange(request):
+    if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
+        return api_json({"status": "error", "error": "Discord Activity authentication is not configured."}, status=503)
+    try:
+        payload = await request.json()
+    except Exception:
+        return api_json({"status": "error", "error": "Invalid request."}, status=400)
+    code = str(payload.get("code", "")).strip()
+    if not code:
+        return api_json({"status": "error", "error": "Missing Discord authorization code."}, status=400)
+
+    form = {
+        "client_id": DISCORD_CLIENT_ID,
+        "client_secret": DISCORD_CLIENT_SECRET,
+        "grant_type": "authorization_code",
+        "code": code,
+    }
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(timeout=timeout) as client:
+        async with client.post("https://discord.com/api/oauth2/token", data=form) as response:
+            data = await response.json(content_type=None)
+            if response.status != 200 or not data.get("access_token"):
+                print(f"Discord OAuth exchange error: {response.status} {str(data)[:300]}")
+                return api_json({"status": "error", "error": "Discord authorization failed."}, status=401)
+            return api_json({
+                "access_token": data["access_token"],
+                "token_type": data.get("token_type", "Bearer"),
+                "expires_in": data.get("expires_in"),
+                "scope": data.get("scope", ""),
+            })
+
+async def handle_contact_seller(request):
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return api_json({"status": "error", "error": "Discord authentication is required."}, status=401)
+    access_token = auth_header[7:].strip()
+    try:
+        discord_user = await get_discord_user_from_access_token(access_token)
+    except Exception:
+        return api_json({"status": "error", "error": "Discord authentication expired. Please try again."}, status=401)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        return api_json({"status": "error", "error": "Invalid request."}, status=400)
+
+    listing_id = str(payload.get("listing_id", "")).strip()
+    offer_number = normalize_offer_number(payload.get("offer_number"))
+    try:
+        listing = await fetch_listing_by_id(listing_id, published_only=True) if listing_id else None
+        if listing is None and offer_number is not None:
+            listing = await fetch_listing_by_offer_number(offer_number, published_only=True)
+        if not listing:
+            return api_json({"status": "error", "error": "This account is no longer available."}, status=409)
+        channel, reused = await create_or_reuse_purchase_ticket(int(discord_user["id"]), listing)
+    except Exception as e:
+        print(f"Contact Seller error: {e}")
+        return api_json({"status": "error", "error": str(e)}, status=500)
+
+    return api_json({
+        "status": "ok",
+        "offer_number": listing["offer_number"],
+        "channel_id": str(channel.id),
+        "guild_id": str(channel.guild.id),
+        "channel_url": f"https://discord.com/channels/{channel.guild.id}/{channel.id}",
+        "reused": reused,
+    })
+
+async def handle_api_options(request):
+    return api_json({"status": "ok"})
+
+def api_json(data, *, status=200):
+    return web.json_response(data, status=status, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Cache-Control": "no-store",
+    })
 
 class DirectPortalLauncherView(View):
     def __init__(self, session_id: str):
@@ -602,7 +938,14 @@ class MarketplaceLauncherView(View):
             "launcher_msg": launcher_msg,
             "created_at": datetime.datetime.utcnow(),
             "cover_file": None,
-            "secondary_files": []
+            "secondary_files": [],
+            "finalize_lock": asyncio.Lock(),
+            "listing_id": None,
+            "all_paths": None,
+            "discord_cdn_urls": [],
+            "discord_uploaded_paths": [],
+            "review_dispatched": False,
+            "finalized": False
         }
 
 HTML_PAGE = """<!DOCTYPE html>
@@ -707,16 +1050,18 @@ HTML_PAGE = """<!DOCTYPE html>
                 <select id="currency">
                     <option value="USD">USD ($)</option>
                     <option value="EUR">EUR (€)</option>
-                    <option value="GBP">GBP (£)</option>
-                    <option value="CAD">CAD ($)</option>
-                    <option value="AUD">AUD ($)</option>
-                    <option value="AED">AED (د.إ)</option>
-                    <option value="SAR">SAR (ر.س)</option>
-                    <option value="DZD">DZD (دج)</option>
                 </select>
             </div>
 
-            <!-- قسم عناصر الحساب المميزة (Categories Checkboxes) -->
+            <label for="category">Primary Shop Category</label>
+            <select id="category" required>
+                <option value="" disabled selected>Select a category</option>
+                <option value="TOP_250">Top 250</option>
+                <option value="NUKES">Nukes</option>
+                <option value="IRIDESCENT">Iridescent</option>
+            </select>
+
+            <!-- Optional account highlights -->
             <div class="checkbox-container">
                 <div class="checkbox-title">
                     <span>DOES YOUR ACCOUNT HAVE ANY OF THESE ITEMS?</span>
@@ -885,6 +1230,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const offerTitle = document.getElementById('offerTitle').value.trim();
             const price = document.getElementById('price').value.trim();
             const currency = document.getElementById('currency').value;
+            const category = document.getElementById('category').value;
             const desc = document.getElementById('desc').value.trim();
 
             const selectedItems = [];
@@ -893,7 +1239,7 @@ HTML_PAGE = """<!DOCTYPE html>
             });
             const itemsString = selectedItems.length > 0 ? selectedItems.join(' • ') : 'None';
 
-            if (!offerTitle || !price || !desc || !coverFile || secondaryFiles.length === 0) {
+            if (!offerTitle || !price || !category || !desc || !coverFile || secondaryFiles.length === 0) {
                 alert("Please fill in all fields, upload primary cover, and at least one gallery image.");
                 return;
             }
@@ -917,6 +1263,7 @@ HTML_PAGE = """<!DOCTYPE html>
             formData.append("offerTitle", offerTitle);
             formData.append("price", price);
             formData.append("currency", currency);
+            formData.append("category", category);
             formData.append("items", itemsString);
             formData.append("description", desc);
 
@@ -990,18 +1337,28 @@ async def handle_upload_images_only(request):
         print(f"Upload error: {e}")
         return web.json_response({"status": "error", "error": str(e)}, status=500)
 
-async def handle_finalize_listing(request):
+async def _handle_finalize_listing(request, data):
     try:
-        data = await request.post()
         session_id = data.get("session")
         offer_title = data.get("offerTitle", "Verified COD Account")
         price = data.get("price", "")
         currency = data.get("currency", "USD")
+        category = data.get("category", "")
         items_list = data.get("items", "None")
         description = data.get("description", "")
 
         if not session_id or session_id not in active_web_sessions:
             return web.json_response({"status": "error", "error": "Session expired."}, status=400)
+        if currency not in ("USD", "EUR"):
+            return web.json_response({"status": "error", "error": "Please select USD or EUR."}, status=400)
+        if category not in ("TOP_250", "NUKES", "IRIDESCENT"):
+            return web.json_response({"status": "error", "error": "Please select a valid Shop category."}, status=400)
+        try:
+            price_value = float(price)
+            if price_value <= 0:
+                raise ValueError()
+        except (TypeError, ValueError):
+            return web.json_response({"status": "error", "error": "Please enter a valid price."}, status=400)
 
         session_info = active_web_sessions[session_id]
         cover_path = session_info.get("cover_file")
@@ -1015,22 +1372,51 @@ async def handle_finalize_listing(request):
         support_role = ticket_channel.guild.get_role(SUPPORT_ROLE_ID) if ticket_channel else None
         seller = bot.get_user(seller_id) or await bot.fetch_user(seller_id)
 
-        all_paths = []
-        if cover_path and os.path.exists(cover_path):
-            all_paths.append(cover_path)
-        for sp in secondary_paths:
-            if os.path.exists(sp):
-                all_paths.append(sp)
+        if not ticket_channel or not review_channel:
+            return web.json_response({"status": "error", "error": "The seller ticket or staff review channel is unavailable. Please contact staff."}, status=503)
 
-        clean_price_num = price.replace("$", "").replace("USD", "").replace("usd", "").strip()
+        if session_info.get("finalized"):
+            return web.json_response({"status": "ok", "count": len(session_info.get("discord_cdn_urls", []))})
 
-        discord_cdn_urls = []
+        if session_info.get("all_paths") is None:
+            all_paths = []
+            if cover_path and os.path.isfile(cover_path):
+                all_paths.append(cover_path)
+            for sp in secondary_paths:
+                if os.path.isfile(sp):
+                    all_paths.append(sp)
+            session_info["all_paths"] = all_paths
+        all_paths = session_info["all_paths"]
+
+        if not cover_path or len(all_paths) < 2:
+            return web.json_response({"status": "error", "error": "Upload a cover image and at least one gallery image."}, status=400)
+
+        # A stable UUID per portal session prevents duplicate records on a retry.
+        listing_id = session_info.get("listing_id") or str(uuid.uuid5(uuid.NAMESPACE_URL, f"pedrao22k-listing:{session_id}"))
+        if not session_info.get("listing_id"):
+            try:
+                await create_supabase_listing(listing_id, seller_id, offer_title, price_value, currency, category, description, all_paths)
+                session_info["listing_id"] = listing_id
+            except Exception as e:
+                print(f"Supabase listing creation error: {e}")
+                return web.json_response({"status": "error", "error": "Could not save your listing and screenshots to the shop database. Please contact staff before retrying."}, status=502)
+
+        clean_price_num = str(price_value)
+        discord_cdn_urls = session_info["discord_cdn_urls"]
+        uploaded_paths = set(session_info["discord_uploaded_paths"])
         for fp in all_paths:
-            files_to_send = [discord.File(fp)]
-            batch_msg = await review_channel.send(content=f"📸 *Proof for {seller.mention}:*", files=files_to_send)
+            if fp in uploaded_paths:
+                continue
+            if not os.path.isfile(fp):
+                return web.json_response({"status": "error", "error": "A screenshot is missing during submission. Please contact staff so we can recover the listing."}, status=409)
+            batch_msg = await review_channel.send(content=f"📸 *Proof for {seller.mention}:*", file=discord.File(fp))
             for att in batch_msg.attachments:
                 discord_cdn_urls.append(att.url)
-            os.remove(fp)
+            session_info["discord_uploaded_paths"].append(fp)
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
 
         submitted_embed = discord.Embed(
             title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
@@ -1051,12 +1437,6 @@ async def handle_finalize_listing(request):
             submitted_embed.set_thumbnail(url=seller.display_avatar.url)
         submitted_embed.set_footer(text="Pedrao22k Services • Awaiting Review")
 
-        try:
-            await launcher_msg.edit(embed=submitted_embed, view=None)
-            await ticket_channel.send(f"🔔 {seller.mention} **Your offer was submitted! Please wait for staff review.** ⏳")
-        except Exception as e:
-            print(f"Error updating launcher message: {e}")
-
         admin_embed = discord.Embed(
             title=f"📥 {offer_title}",
             description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
@@ -1064,12 +1444,13 @@ async def handle_finalize_listing(request):
             timestamp=datetime.datetime.utcnow()
         )
         admin_embed.add_field(name="💰 Asking Price", value=f"{clean_price_num} {currency}", inline=False)
+        admin_embed.add_field(name="🗂️ Shop Category", value=category.replace("_", " "), inline=True)
         admin_embed.add_field(name="🌟 Account Highlights", value=f"{items_list}", inline=False)
         admin_embed.add_field(name="📋 Account Details", value=description[:1024], inline=False)
         if discord_cdn_urls:
             admin_embed.set_image(url=discord_cdn_urls[0])
 
-        if review_channel:
+        if not session_info.get("review_dispatched"):
             role_ping = support_role.mention if support_role else "@here"
             approval_view = AdminApprovalView(
                 seller=seller,
@@ -1082,19 +1463,40 @@ async def handle_finalize_listing(request):
                 currency=currency,
                 items_list=items_list,
                 description=description,
-                count_str=f"{len(discord_cdn_urls)} proofs"
+                count_str=f"{len(discord_cdn_urls)} proofs",
+                listing_id=listing_id
             )
             await review_channel.send(
                 content=f"🔔 {role_ping} **New Account Submission (Cover Thumbnail Selected):**",
                 embed=admin_embed,
                 view=approval_view
             )
+            session_info["review_dispatched"] = True
 
-        active_web_sessions.pop(session_id, None)
+        try:
+            await launcher_msg.edit(embed=submitted_embed, view=None)
+            await ticket_channel.send(f"🔔 {seller.mention} **Your offer was submitted! Please wait for staff review.** ⏳")
+        except Exception as e:
+            print(f"Error updating seller submission messages: {e}")
+
+        session_info["finalized"] = True
         return web.json_response({"status": "ok", "count": len(discord_cdn_urls)})
     except Exception as e:
         print(f"Finalize error: {e}")
-        return web.json_response({"status": "error", "error": str(e)}, status=500)
+        return web.json_response({"status": "error", "error": "Submission could not be completed. Please retry once; if it continues, contact staff."}, status=500)
+
+async def handle_finalize_listing(request):
+    try:
+        data = await request.post()
+    except Exception:
+        return web.json_response({"status": "error", "error": "Invalid submission data."}, status=400)
+    session_id = data.get("session")
+    session_info = active_web_sessions.get(session_id)
+    if not session_info:
+        return web.json_response({"status": "error", "error": "Session expired. Please reopen the seller portal."}, status=400)
+    # Serialize repeated clicks/retries for this portal session.
+    async with session_info["finalize_lock"]:
+        return await _handle_finalize_listing(request, data)
 
 async def session_cleaner_task():
     while True:
@@ -1110,6 +1512,10 @@ async def start_web_server():
     app.router.add_get("/upload", handle_web_page)
     app.router.add_post("/api/upload_images_only", handle_upload_images_only)
     app.router.add_post("/api/finalize_listing", handle_finalize_listing)
+    app.router.add_post("/api/discord/exchange", handle_discord_exchange)
+    app.router.add_post("/api/contact-seller", handle_contact_seller)
+    app.router.add_options("/api/discord/exchange", handle_api_options)
+    app.router.add_options("/api/contact-seller", handle_api_options)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEB_PORT)
@@ -1143,16 +1549,87 @@ class FeedbackView(View):
     async def open_feedback_modal(self, interaction: discord.Interaction, button: Button):
         await interaction.response.send_modal(FeedbackModal())
 
+persistent_views_registered = False
+background_tasks_started = False
+slash_commands_synced = False
+
 @bot.event
 async def on_ready():
-    bot.add_view(TicketLauncherView())
-    bot.add_view(CloseTicketView())
-    bot.add_view(MarketplaceLauncherView())
-    bot.add_view(FeedbackView())
-    bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
-    bot.loop.create_task(start_web_server())
-    bot.loop.create_task(session_cleaner_task())
+    global persistent_views_registered, background_tasks_started, slash_commands_synced
+    if not persistent_views_registered:
+        bot.add_view(TicketLauncherView())
+        bot.add_view(CloseTicketView())
+        bot.add_view(MarketplaceLauncherView())
+        bot.add_view(FeedbackView())
+        bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
+        persistent_views_registered = True
+    if not background_tasks_started:
+        bot.loop.create_task(start_web_server())
+        bot.loop.create_task(session_cleaner_task())
+        background_tasks_started = True
+    if not slash_commands_synced:
+        try:
+            category = bot.get_channel(TICKET_CATEGORY_ID)
+            if isinstance(category, discord.CategoryChannel):
+                guild_obj = discord.Object(id=category.guild.id)
+                bot.tree.copy_global_to(guild=guild_obj)
+                synced = await bot.tree.sync(guild=guild_obj)
+                print(f"✅ Synced {len(synced)} slash command(s) to guild {category.guild.id}.")
+            else:
+                synced = await bot.tree.sync()
+                print(f"✅ Synced {len(synced)} global slash command(s).")
+            slash_commands_synced = True
+        except Exception as e:
+            print(f"Slash command sync error: {e}")
     print(f"Logged in as {bot.user.name} | Railway Cloud Engine Online 24/7!")
+
+@bot.tree.command(name="sold", description="Mark the account in this purchase ticket as sold.")
+@app_commands.describe(account_id="Optional account ID, for example 01#")
+@app_commands.default_permissions(administrator=True)
+async def sold_command(interaction: discord.Interaction, account_id: Optional[str] = None):
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return await interaction.response.send_message("❌ This command can only be used inside the server.", ephemeral=True)
+    if not is_staff_member(interaction.user):
+        return await interaction.response.send_message("❌ This command is restricted to staff.", ephemeral=True)
+
+    source_channel_id = None
+    offer_number = None
+    if isinstance(interaction.channel, discord.TextChannel):
+        meta = parse_purchase_ticket_topic(interaction.channel.topic)
+        if meta:
+            offer_number = int(meta["offer_number"])
+            source_channel_id = interaction.channel.id
+
+    if offer_number is None:
+        offer_number = normalize_offer_number(account_id)
+        if offer_number is None:
+            return await interaction.response.send_message(
+                "❌ No account ID was detected. Use this command inside a Buy Account ticket, or provide an ID such as `01#`.",
+                ephemeral=True,
+            )
+
+    try:
+        listing = await fetch_listing_by_offer_number(offer_number)
+    except Exception as e:
+        return await interaction.response.send_message(f"❌ Could not load {format_offer_id(offer_number)}: `{e}`", ephemeral=True)
+    if not listing:
+        return await interaction.response.send_message(f"❌ Account {format_offer_id(offer_number)} was not found.", ephemeral=True)
+    if listing.get("status") == "SOLD":
+        return await interaction.response.send_message(f"⚠️ Account {format_offer_id(offer_number)} is already marked as sold.", ephemeral=True)
+
+    embed = discord.Embed(
+        title=f"Mark {format_offer_id(offer_number)} as sold?",
+        description=(
+            f"**{format_offer_id(offer_number)} - {listing['title']}**\n\n"
+            "This will remove the account from the Accounts Shop and close any other open buyer tickets for this account."
+        ),
+        color=0xEF4444,
+    )
+    await interaction.response.send_message(
+        embed=embed,
+        view=SoldConfirmationView(interaction.user.id, listing, source_channel_id),
+        ephemeral=True,
+    )
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -1256,8 +1733,7 @@ async def setup_market(ctx):
         embed.set_author(name="Pedrao22k Marketplace", icon_url=guild_icon_url)
     embed.set_footer(text="Pedrao22k. | Verified Seller Hub")
     await ctx.send(embed=embed, view=MarketplaceLauncherView())
-    
-print("DISCORD_TOKEN configurado:", bool(os.getenv("DISCORD_TOKEN")))
-print("TOKEN configurado:", bool(os.getenv("TOKEN")))
 
+if not TOKEN:
+    raise RuntimeError("Missing DISCORD_TOKEN environment variable. Configure it in Railway.")
 bot.run(TOKEN)
