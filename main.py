@@ -31,6 +31,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 SHOP_URL = os.environ.get("SHOP_URL", "https://projeto-optmus-prime.vercel.app").rstrip("/")
 DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "")
 DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
+SHOP_ENTRY_CHANNEL_ID = int(os.environ.get("SHOP_ENTRY_CHANNEL_ID", "0") or 0)
 
 CRYPTO_ADDRESSES = {
     "USDT_TRC20": "TYourTRC20AddressHereXXXXXXXXXXXXXX",
@@ -200,6 +201,145 @@ def parse_purchase_ticket_topic(topic: Optional[str]) -> Optional[dict]:
     except ValueError:
         return None
     return result
+
+
+class ShopLaunchView(View):
+    """Persistent button used in the public accounts-for-sale text channel."""
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Open Accounts Shop",
+        style=discord.ButtonStyle.primary,
+        emoji="🛒",
+        custom_id="pedrao22k_open_accounts_shop_activity",
+    )
+    async def open_shop(self, interaction: discord.Interaction, button: Button):
+        try:
+            await interaction.response.launch_activity()
+        except Exception as e:
+            print(f"Accounts Shop Activity launch error: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ The Accounts Shop could not be opened. Please try again.", ephemeral=True)
+            else:
+                try:
+                    await interaction.followup.send("❌ The Accounts Shop could not be opened. Please try again.", ephemeral=True)
+                except Exception:
+                    pass
+
+
+class PurchaseOfferActivityView(View):
+    """Persistent View Offer button for purchase tickets.
+
+    The offer is resolved from the ticket channel topic by the Activity, so the
+    same persistent custom_id works for every ticket and survives bot restarts.
+    """
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="View Offer",
+        style=discord.ButtonStyle.secondary,
+        emoji="👁️",
+        custom_id="pedrao22k_view_offer_activity",
+    )
+    async def view_offer(self, interaction: discord.Interaction, button: Button):
+        try:
+            await interaction.response.launch_activity()
+        except Exception as e:
+            print(f"View Offer Activity launch error: {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ The Accounts Shop could not be opened. Please try again.", ephemeral=True)
+            else:
+                try:
+                    await interaction.followup.send("❌ The Accounts Shop could not be opened. Please try again.", ephemeral=True)
+                except Exception:
+                    pass
+
+
+def find_shop_entry_channel() -> Optional[discord.TextChannel]:
+    """Find the new text channel used as the Accounts Shop entry point.
+
+    SHOP_ENTRY_CHANNEL_ID can be set later for a strict ID-based configuration.
+    Until then, fall back to a normal text channel whose name contains
+    'accounts-for-sale' while excluding legacy/old channels.
+    """
+    if SHOP_ENTRY_CHANNEL_ID:
+        channel = bot.get_channel(SHOP_ENTRY_CHANNEL_ID)
+        return channel if isinstance(channel, discord.TextChannel) else None
+
+    candidates = []
+    for guild in bot.guilds:
+        for channel in guild.text_channels:
+            name = channel.name.lower()
+            if "accounts-for-sale" in name and "old" not in name:
+                candidates.append(channel)
+    return candidates[0] if candidates else None
+
+
+async def ensure_shop_entry_message():
+    channel = find_shop_entry_channel()
+    if channel is None:
+        print("Accounts Shop entry channel not found. Set SHOP_ENTRY_CHANNEL_ID or create a text channel containing 'accounts-for-sale'.")
+        return
+
+    embed = discord.Embed(
+        title="🛒 ACCOUNTS SHOP",
+        description=(
+            "Browse verified Call of Duty accounts directly inside Discord.\n\n"
+            "• Live inventory\n"
+            "• Verified account listings\n"
+            "• Private support through **Contact Seller**\n\n"
+            "Click the button below to open the shop."
+        ),
+        color=0xF59E0B,
+    )
+    embed.set_footer(text="Pedrao22k Accounts Shop • Live Inventory")
+
+    existing = None
+    try:
+        async for message in channel.history(limit=50):
+            if message.author.id != bot.user.id or not message.embeds:
+                continue
+            footer = message.embeds[0].footer.text if message.embeds[0].footer else None
+            if footer == "Pedrao22k Accounts Shop • Live Inventory":
+                existing = message
+                break
+    except Exception as e:
+        print(f"Accounts Shop entry history scan error: {e}")
+
+    try:
+        if existing:
+            await existing.edit(embed=embed, view=ShopLaunchView())
+        else:
+            await channel.send(embed=embed, view=ShopLaunchView())
+        print(f"✅ Accounts Shop entry message ready in #{channel.name} ({channel.id}).")
+    except Exception as e:
+        print(f"Accounts Shop entry message error: {e}")
+
+
+async def ensure_purchase_ticket_activity_button(channel: discord.TextChannel):
+    """Upgrade an existing purchase ticket's legacy URL button in place."""
+    try:
+        async for message in channel.history(limit=50):
+            if message.author.id != bot.user.id or not message.embeds:
+                continue
+            footer = message.embeds[0].footer.text if message.embeds[0].footer else None
+            if footer == "Pedrao22k Accounts Shop":
+                await message.edit(view=PurchaseOfferActivityView())
+                return True
+    except Exception as e:
+        print(f"Purchase ticket View Offer refresh error for {channel.id}: {e}")
+    return False
+
+
+async def refresh_purchase_ticket_activity_buttons():
+    category = bot.get_channel(TICKET_CATEGORY_ID)
+    if not isinstance(category, discord.CategoryChannel):
+        return
+    for channel in list(category.text_channels):
+        if parse_purchase_ticket_topic(channel.topic):
+            await ensure_purchase_ticket_activity_button(channel)
 
 def is_staff_member(member: discord.Member) -> bool:
     return bool(member.guild_permissions.administrator or any(role.id == SUPPORT_ROLE_ID for role in member.roles))
@@ -756,6 +896,7 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
         for channel in category.text_channels:
             meta = parse_purchase_ticket_topic(channel.topic)
             if meta and meta.get("listing_id") == listing_id and meta.get("buyer_id") == buyer_id:
+                await ensure_purchase_ticket_activity_button(channel)
                 return channel, True
 
         support_role = guild.get_role(SUPPORT_ROLE_ID)
@@ -777,7 +918,6 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
             reason=f"Accounts Shop contact for {format_offer_id(offer_number)}",
         )
 
-        view_offer_url = f"{SHOP_URL}/?offer={offer_number:02d}"
         embed = discord.Embed(
             title=f"{format_offer_id(offer_number)} - {listing['title']}",
             description=(
@@ -789,10 +929,8 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
             timestamp=datetime.datetime.utcnow(),
         )
         embed.set_footer(text="Pedrao22k Accounts Shop")
-        link_view = View(timeout=None)
-        link_view.add_item(Button(label="View Offer", style=discord.ButtonStyle.link, url=view_offer_url, emoji="👁️"))
         role_ping = support_role.mention if support_role else ""
-        await channel.send(content=f"{buyer.mention} {role_ping}", embed=embed, view=link_view)
+        await channel.send(content=f"{buyer.mention} {role_ping}", embed=embed, view=PurchaseOfferActivityView())
         await channel.send(view=CloseTicketView())
         return channel, False
 
@@ -862,6 +1000,38 @@ async def handle_contact_seller(request):
         "guild_id": str(channel.guild.id),
         "channel_url": f"https://discord.com/channels/{channel.guild.id}/{channel.id}",
         "reused": reused,
+    })
+
+
+async def handle_activity_context(request):
+    """Resolve which public offer belongs to the Discord channel that launched the Activity.
+
+    This endpoint exposes only public listing identifiers. The channel topic is
+    written by this bot and is the source of the ticket -> offer mapping.
+    """
+    raw_channel_id = str(request.query.get("channel_id", "")).strip()
+    if not raw_channel_id.isdigit():
+        return api_json({"status": "ok", "offer_number": None, "listing_id": None})
+
+    channel_id = int(raw_channel_id)
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception:
+            channel = None
+
+    if not isinstance(channel, discord.TextChannel):
+        return api_json({"status": "ok", "offer_number": None, "listing_id": None})
+
+    meta = parse_purchase_ticket_topic(channel.topic)
+    if not meta:
+        return api_json({"status": "ok", "offer_number": None, "listing_id": None})
+
+    return api_json({
+        "status": "ok",
+        "offer_number": int(meta["offer_number"]),
+        "listing_id": str(meta["listing_id"]),
     })
 
 async def handle_api_options(request):
@@ -1514,6 +1684,7 @@ async def start_web_server():
     app.router.add_post("/api/finalize_listing", handle_finalize_listing)
     app.router.add_post("/api/discord/exchange", handle_discord_exchange)
     app.router.add_post("/api/contact-seller", handle_contact_seller)
+    app.router.add_get("/api/activity-context", handle_activity_context)
     app.router.add_options("/api/discord/exchange", handle_api_options)
     app.router.add_options("/api/contact-seller", handle_api_options)
     runner = web.AppRunner(app)
@@ -1562,11 +1733,19 @@ async def on_ready():
         bot.add_view(MarketplaceLauncherView())
         bot.add_view(FeedbackView())
         bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
+        bot.add_view(ShopLaunchView())
+        bot.add_view(PurchaseOfferActivityView())
         persistent_views_registered = True
     if not background_tasks_started:
         bot.loop.create_task(start_web_server())
         bot.loop.create_task(session_cleaner_task())
         background_tasks_started = True
+    try:
+        await ensure_shop_entry_message()
+        await refresh_purchase_ticket_activity_buttons()
+    except Exception as e:
+        print(f"Accounts Shop Activity setup error: {e}")
+
     if not slash_commands_synced:
         try:
             category = bot.get_channel(TICKET_CATEGORY_ID)
