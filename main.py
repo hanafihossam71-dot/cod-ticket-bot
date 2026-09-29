@@ -31,7 +31,8 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 SHOP_URL = os.environ.get("SHOP_URL", "https://projeto-optmus-prime.vercel.app").rstrip("/")
 DISCORD_CLIENT_ID = os.environ.get("DISCORD_CLIENT_ID", "")
 DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
-SHOP_ENTRY_CHANNEL_ID = int(os.environ.get("SHOP_ENTRY_CHANNEL_ID", "0") or 0)
+DEFAULT_SHOP_ENTRY_CHANNEL_ID = 1554581284112826429
+SHOP_ENTRY_CHANNEL_ID = int(os.environ.get("SHOP_ENTRY_CHANNEL_ID", str(DEFAULT_SHOP_ENTRY_CHANNEL_ID)) or DEFAULT_SHOP_ENTRY_CHANNEL_ID)
 
 CRYPTO_ADDRESSES = {
     "USDT_TRC20": "TYourTRC20AddressHereXXXXXXXXXXXXXX",
@@ -284,12 +285,34 @@ def _message_has_shop_launch_button(message: discord.Message) -> bool:
     return False
 
 
+async def ensure_shop_entry_read_only(channel: discord.TextChannel):
+    """Make the Shop launcher channel read-only for @everyone without replacing other overrides."""
+    try:
+        overwrite = channel.overwrites_for(channel.guild.default_role)
+        overwrite.send_messages = False
+        overwrite.add_reactions = False
+        overwrite.create_public_threads = False
+        overwrite.create_private_threads = False
+        overwrite.send_messages_in_threads = False
+        await channel.set_permissions(
+            channel.guild.default_role,
+            overwrite=overwrite,
+            reason="Pedrao22k Accounts Shop launcher channel: read-only for members",
+        )
+        print(f"✅ Accounts Shop channel set to read-only for @everyone: #{channel.name} ({channel.id}).")
+    except Exception as e:
+        # Do not block the launcher if the bot lacks Manage Channels; log the exact issue instead.
+        print(f"Accounts Shop read-only permission error for #{channel.name} ({channel.id}): {e}")
+
+
 async def ensure_shop_entry_message():
     """Keep the public shop entry channel visually clean: one button, no text/embed."""
     channel = find_shop_entry_channel()
     if channel is None:
         print("Accounts Shop entry channel not found. Set SHOP_ENTRY_CHANNEL_ID or create a text channel containing 'accounts-for-sale'.")
         return
+
+    await ensure_shop_entry_read_only(channel)
 
     launch_messages = []
     try:
