@@ -209,9 +209,8 @@ class ShopLaunchView(View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="Open Accounts Shop",
+        label="OPEN ACCOUNTS SHOP",
         style=discord.ButtonStyle.primary,
-        emoji="🛒",
         custom_id="pedrao22k_open_accounts_shop_activity",
     )
     async def open_shop(self, interaction: discord.Interaction, button: Button):
@@ -277,43 +276,54 @@ def find_shop_entry_channel() -> Optional[discord.TextChannel]:
     return candidates[0] if candidates else None
 
 
+def _message_has_shop_launch_button(message: discord.Message) -> bool:
+    for row in getattr(message, "components", []) or []:
+        for child in getattr(row, "children", []) or []:
+            if getattr(child, "custom_id", None) == "pedrao22k_open_accounts_shop_activity":
+                return True
+    return False
+
+
 async def ensure_shop_entry_message():
+    """Keep the public shop entry channel visually clean: one button, no text/embed."""
     channel = find_shop_entry_channel()
     if channel is None:
         print("Accounts Shop entry channel not found. Set SHOP_ENTRY_CHANNEL_ID or create a text channel containing 'accounts-for-sale'.")
         return
 
-    embed = discord.Embed(
-        title="🛒 ACCOUNTS SHOP",
-        description=(
-            "Browse verified Call of Duty accounts directly inside Discord.\n\n"
-            "• Live inventory\n"
-            "• Verified account listings\n"
-            "• Private support through **Contact Seller**\n\n"
-            "Click the button below to open the shop."
-        ),
-        color=0xF59E0B,
-    )
-    embed.set_footer(text="Pedrao22k Accounts Shop • Live Inventory")
-
-    existing = None
+    launch_messages = []
     try:
-        async for message in channel.history(limit=50):
-            if message.author.id != bot.user.id or not message.embeds:
+        async for message in channel.history(limit=100):
+            if message.author.id != bot.user.id:
                 continue
-            footer = message.embeds[0].footer.text if message.embeds[0].footer else None
-            if footer == "Pedrao22k Accounts Shop • Live Inventory":
-                existing = message
-                break
+
+            is_legacy_launcher = False
+            if message.embeds:
+                footer = message.embeds[0].footer.text if message.embeds[0].footer else None
+                is_legacy_launcher = footer == "Pedrao22k Accounts Shop • Live Inventory"
+
+            if is_legacy_launcher or _message_has_shop_launch_button(message):
+                launch_messages.append(message)
     except Exception as e:
         print(f"Accounts Shop entry history scan error: {e}")
 
     try:
-        if existing:
-            await existing.edit(embed=embed, view=ShopLaunchView())
+        if launch_messages:
+            # Reuse the newest launcher message so old channel links/history remain stable.
+            existing = launch_messages[0]
+            await existing.edit(content=None, embeds=[], view=ShopLaunchView())
+
+            # Remove duplicate launcher messages from previous versions, if any.
+            for duplicate in launch_messages[1:]:
+                try:
+                    await duplicate.delete()
+                except Exception as delete_error:
+                    print(f"Accounts Shop duplicate launcher cleanup error ({duplicate.id}): {delete_error}")
         else:
-            await channel.send(embed=embed, view=ShopLaunchView())
-        print(f"✅ Accounts Shop entry message ready in #{channel.name} ({channel.id}).")
+            # Discord allows a message whose only visible payload is an interactive component.
+            await channel.send(view=ShopLaunchView())
+
+        print(f"✅ Clean Accounts Shop launcher ready in #{channel.name} ({channel.id}).")
     except Exception as e:
         print(f"Accounts Shop entry message error: {e}")
 
