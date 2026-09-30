@@ -214,6 +214,34 @@ INTERACTION_CLICK_GUARD_SECONDS = 6.0
 _interaction_click_guard: dict[tuple[int, int, str], float] = {}
 
 
+async def _delete_original_interaction_response_later(interaction: discord.Interaction, delay: float = 6.0):
+    """Remove a successful ephemeral ticket-created notice after a short delay.
+
+    This keeps ticket launcher channels clean. Error/warning notices are intentionally
+    not auto-deleted so the user can still read what went wrong.
+    """
+    await asyncio.sleep(delay)
+    try:
+        await interaction.delete_original_response()
+    except Exception as e:
+        # The message may already be gone or the interaction token may have expired.
+        print(f"Ephemeral ticket notice cleanup skipped: {e}")
+
+
+async def show_temporary_ticket_created_notice(
+    interaction: discord.Interaction,
+    content: str,
+    *,
+    delay: float = 6.0,
+):
+    """Acknowledge a successful ticket creation, then remove the notice automatically."""
+    if interaction.response.is_done():
+        await interaction.edit_original_response(content=content, embed=None, view=None)
+    else:
+        await interaction.response.send_message(content, ephemeral=True)
+    asyncio.create_task(_delete_original_interaction_response_later(interaction, delay))
+
+
 async def allow_single_interaction(
     interaction: discord.Interaction,
     action_key: str,
@@ -641,6 +669,9 @@ class TicketSelect(Select):
         if existing:
             return await interaction.response.send_message(f"⚠️ You already have an open ticket: {existing.mention}", ephemeral=True)
 
+        # Acknowledge before Discord's interaction timeout while the private channel is created.
+        await interaction.response.defer(ephemeral=True)
+
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
@@ -667,7 +698,10 @@ class TicketSelect(Select):
 
         role_ping = support_role.mention if support_role else ""
         await ticket_channel.send(content=f"{interaction.user.mention} {role_ping}", embed=embed, view=CloseTicketView())
-        await interaction.response.send_message(f"✅ Your ticket has been created: {ticket_channel.mention}", ephemeral=True)
+        await show_temporary_ticket_created_notice(
+            interaction,
+            f"✅ Your ticket has been created: {ticket_channel.mention}",
+        )
 
 class TicketLauncherView(View):
     def __init__(self):
@@ -810,6 +844,9 @@ class MarketplaceCarouselView(View):
         if existing:
             return await interaction.response.send_message(f"⚠️ You already have an open buying ticket: {existing.mention}", ephemeral=True)
 
+        # Acknowledge before Discord's interaction timeout while the private channel is created.
+        await interaction.response.defer(ephemeral=True)
+
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
@@ -841,7 +878,10 @@ class MarketplaceCarouselView(View):
 
         role_ping = support_role.mention if support_role else ""
         await buy_ticket_channel.send(content=f"{interaction.user.mention} {role_ping}", embed=buy_embed, view=CloseTicketView())
-        await interaction.response.send_message(f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}", ephemeral=True)
+        await show_temporary_ticket_created_notice(
+            interaction,
+            f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}",
+        )
 
 class AdminApprovalView(View):
     def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", currency: str = "USD", items_list: str = "None", description: str = "", count_str: str = "", listing_id: str = ""):
@@ -1265,7 +1305,10 @@ class MarketplaceLauncherView(View):
 
         launcher_msg = await sell_ticket_channel.send(content=f"{interaction.user.mention} {role_ping}", embed=welcome_embed, view=DirectPortalLauncherView(session_id=session_id))
         await sell_ticket_channel.send(view=CloseTicketView())
-        await interaction.followup.send(f"✅ Your seller room has been created: {sell_ticket_channel.mention}", ephemeral=True)
+        await show_temporary_ticket_created_notice(
+            interaction,
+            f"✅ Your seller room has been created: {sell_ticket_channel.mention}",
+        )
 
         active_web_sessions[session_id] = {
             "seller_id": interaction.user.id,
