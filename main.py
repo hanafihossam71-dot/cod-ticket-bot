@@ -9,6 +9,7 @@ import os
 import time
 import uuid
 import re
+import hashlib
 import aiohttp
 from aiohttp import web
 from typing import Optional
@@ -49,6 +50,25 @@ intents.guilds = True
 intents.members = True
 
 bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+def dedupe_file_paths_by_content(paths: list[str]) -> list[str]:
+    """Preserve upload order while removing byte-identical images."""
+    unique_paths = []
+    seen_hashes = set()
+    for path in paths:
+        if not path or not os.path.isfile(path):
+            continue
+        digest = hashlib.sha256()
+        with open(path, "rb") as image_file:
+            for chunk in iter(lambda: image_file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        checksum = digest.hexdigest()
+        if checksum in seen_hashes:
+            continue
+        seen_hashes.add(checksum)
+        unique_paths.append(path)
+    return unique_paths
 
 async def supabase_request(method: str, endpoint: str, *, json_data=None, body=None, content_type=None):
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
@@ -187,15 +207,24 @@ def format_listing_price(listing: dict) -> str:
 def purchase_ticket_topic(listing_id: str, offer_number: int, buyer_id: int) -> str:
     return f"pedrao22k_purchase;listing_id={listing_id};offer_number={offer_number};buyer_id={buyer_id}"
 
-def parse_purchase_ticket_topic(topic: Optional[str]) -> Optional[dict]:
-    if not topic or not topic.startswith("pedrao22k_purchase;"):
+def seller_listing_topic(listing_id: str, offer_number: int, seller_id: int) -> str:
+    # Lets an Activity launched from the seller ticket resolve the exact approved offer
+    # without using a public website link.
+    return f"pedrao22k_seller_listing;listing_id={listing_id};offer_number={offer_number};seller_id={seller_id}"
+
+def _parse_topic_fields(topic: Optional[str], prefix: str) -> Optional[dict]:
+    if not topic or not topic.startswith(prefix):
         return None
     result = {}
     for piece in topic.split(";")[1:]:
         if "=" in piece:
             key, value = piece.split("=", 1)
             result[key] = value
-    if not result.get("listing_id") or not result.get("offer_number") or not result.get("buyer_id"):
+    return result
+
+def parse_purchase_ticket_topic(topic: Optional[str]) -> Optional[dict]:
+    result = _parse_topic_fields(topic, "pedrao22k_purchase;")
+    if not result or not result.get("listing_id") or not result.get("offer_number") or not result.get("buyer_id"):
         return None
     try:
         result["offer_number"] = int(result["offer_number"])
@@ -203,6 +232,22 @@ def parse_purchase_ticket_topic(topic: Optional[str]) -> Optional[dict]:
     except ValueError:
         return None
     return result
+
+def parse_seller_listing_topic(topic: Optional[str]) -> Optional[dict]:
+    result = _parse_topic_fields(topic, "pedrao22k_seller_listing;")
+    if not result or not result.get("listing_id") or not result.get("offer_number") or not result.get("seller_id"):
+        return None
+    try:
+        result["offer_number"] = int(result["offer_number"])
+        result["seller_id"] = int(result["seller_id"])
+    except ValueError:
+        return None
+    return result
+
+def parse_activity_offer_topic(topic: Optional[str]) -> Optional[dict]:
+    # Purchase tickets and approved seller tickets can both launch the Activity
+    # directly into their exact offer.
+    return parse_purchase_ticket_topic(topic) or parse_seller_listing_topic(topic)
 
 
 
@@ -337,6 +382,27 @@ class PurchaseOfferActivityView(View):
     async def view_offer(self, interaction: discord.Interaction, button: Button):
         channel_id = getattr(interaction.channel, "id", 0)
         await launch_activity_safely(interaction, f"view_offer:{channel_id}")
+
+
+class SellerApprovedActivityView(View):
+    """Persistent launcher shown after a seller listing is approved.
+
+    Unlike a normal URL button, this uses Discord's Activity launcher so the
+    Accounts Shop stays inside Discord. The seller ticket topic maps the current
+    channel to the exact approved offer.
+    """
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="OPEN IN ACCOUNTS SHOP",
+        style=discord.ButtonStyle.primary,
+        emoji="🛒",
+        custom_id="pedrao22k_open_approved_seller_offer_activity",
+    )
+    async def open_offer(self, interaction: discord.Interaction, button: Button):
+        channel_id = getattr(interaction.channel, "id", 0)
+        await launch_activity_safely(interaction, f"seller_approved_offer:{channel_id}")
 
 
 def find_shop_entry_channel() -> Optional[discord.TextChannel]:
@@ -900,17 +966,35 @@ class AdminApprovalView(View):
         await interaction.response.defer(ephemeral=True)
         try:
             await set_listing_status(self.listing_id, "PUBLISHED")
+            published_listing = await fetch_listing_by_id(self.listing_id, published_only=True)
+            if not published_listing or published_listing.get("offer_number") is None:
+                raise RuntimeError("Published listing was not returned with an offer number.")
+            offer_number = int(published_listing["offer_number"])
+
+            # Map this seller ticket to the exact public offer. The Shop Activity
+            # reads the channel context and opens this offer automatically.
+            try:
+                await self.ticket_channel.edit(
+                    topic=seller_listing_topic(self.listing_id, offer_number, int(self.seller.id)),
+                    reason=f"Published Accounts Shop offer {format_offer_id(offer_number)}",
+                )
+            except Exception as topic_error:
+                print(f"Seller ticket Activity context update error: {topic_error}")
+
             button.disabled = True
             self.reject.disabled = True
             await interaction.message.edit(content="✅ **Listing approved and published to Accounts Shop!**", view=self)
-            await interaction.followup.send(f"✅ Listing is now live in the [Accounts Shop]({SHOP_URL}).", ephemeral=True)
+            await interaction.followup.send(
+                f"✅ {format_offer_id(offer_number)} is now live in the Accounts Shop.",
+                ephemeral=True,
+            )
             if self.launcher_msg:
                 try:
                     approved_embed = discord.Embed(
                         title="🎉 LISTING APPROVED & PUBLISHED ON ACCOUNTS SHOP",
                         description=(
                             f"Great news {self.seller.mention}! Your account listing has been approved and is now visible in our Accounts Shop.\n\n"
-                            f"🔗 **Accounts Shop:** [View Shop]({SHOP_URL})"
+                            f"🛒 **{format_offer_id(offer_number)} — Open your offer inside Discord using the button below.**"
                         ),
                         color=0x10B981,
                         timestamp=datetime.datetime.utcnow()
@@ -918,11 +1002,13 @@ class AdminApprovalView(View):
                     if self.seller.display_avatar:
                         approved_embed.set_thumbnail(url=self.seller.display_avatar.url)
                     approved_embed.set_footer(text="Pedrao22k Services • Listing Live")
-                    await self.launcher_msg.edit(embed=approved_embed, view=None)
+                    await self.launcher_msg.edit(embed=approved_embed, view=SellerApprovedActivityView())
                 except Exception as e:
                     print(f"Error editing launcher to approved: {e}")
             try:
-                await self.ticket_channel.send(f"🎉 {self.seller.mention} **Your account has been approved and is now live in the [Accounts Shop]({SHOP_URL}).**")
+                await self.ticket_channel.send(
+                    f"🎉 {self.seller.mention} **Your account has been approved and is now live in the Accounts Shop.**"
+                )
             except Exception:
                 pass
         except Exception as e:
@@ -1056,7 +1142,10 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
     offer_number = int(listing["offer_number"])
 
     async with purchase_ticket_lock:
-        for channel in category.text_channels:
+        # Search the whole guild, not only the current ticket category. This
+        # keeps the same buyer + listing mapped to the same active ticket even
+        # if staff moves that ticket to another category.
+        for channel in guild.text_channels:
             meta = parse_purchase_ticket_topic(channel.topic)
             if meta and meta.get("listing_id") == listing_id and meta.get("buyer_id") == buyer_id:
                 await ensure_purchase_ticket_activity_button(channel)
@@ -1187,7 +1276,7 @@ async def handle_activity_context(request):
     if not isinstance(channel, discord.TextChannel):
         return api_json({"status": "ok", "offer_number": None, "listing_id": None})
 
-    meta = parse_purchase_ticket_topic(channel.topic)
+    meta = parse_activity_offer_topic(channel.topic)
     if not meta:
         return api_json({"status": "ok", "offer_number": None, "listing_id": None})
 
@@ -1471,11 +1560,27 @@ HTML_PAGE = """<!DOCTYPE html>
             uploadImagesDirectly(file, true);
         }
 
+        function fileFingerprint(file) {
+            return `${file.name}|${file.size}|${file.lastModified}`;
+        }
+
         function handleSecondarySelection(files) {
+            const existing = new Set(secondaryFiles.map(fileFingerprint));
+            const coverFingerprint = coverFile ? fileFingerprint(coverFile) : null;
+            const accepted = [];
+            let skipped = 0;
+
             for (let i = 0; i < files.length; i++) {
-                if (files[i].type.startsWith('image/')) {
-                    secondaryFiles.push(files[i]);
+                const file = files[i];
+                if (!file.type.startsWith('image/')) continue;
+                const fingerprint = fileFingerprint(file);
+                if (fingerprint === coverFingerprint || existing.has(fingerprint)) {
+                    skipped += 1;
+                    continue;
                 }
+                existing.add(fingerprint);
+                secondaryFiles.push(file);
+                accepted.push(file);
             }
             if (secondaryFiles.length === 0) return;
 
@@ -1488,14 +1593,12 @@ HTML_PAGE = """<!DOCTYPE html>
                 grid.appendChild(item);
             });
 
-            document.getElementById('secondaryText').innerText = `✨ ${secondaryFiles.length} Gallery Screenshots Loaded`;
+            document.getElementById('secondaryText').innerText = skipped > 0
+                ? `✨ ${secondaryFiles.length} Gallery Screenshots Loaded • ${skipped} Duplicate Skipped`
+                : `✨ ${secondaryFiles.length} Gallery Screenshots Loaded`;
             document.getElementById('secondaryText').style.color = '#FFB800';
 
-            for (let i = 0; i < files.length; i++) {
-                if (files[i].type.startsWith('image/')) {
-                    uploadImagesDirectly(files[i], false);
-                }
-            }
+            accepted.forEach(file => uploadImagesDirectly(file, false));
         }
 
         function uploadImagesDirectly(file, isCover) {
@@ -1728,11 +1831,14 @@ async def _handle_finalize_listing(request, data):
             for sp in secondary_paths:
                 if os.path.isfile(sp):
                     all_paths.append(sp)
+            # Avoid storing the cover (or any screenshot) twice when the same
+            # file is selected more than once in the Seller Portal.
+            all_paths = dedupe_file_paths_by_content(all_paths)
             session_info["all_paths"] = all_paths
         all_paths = session_info["all_paths"]
 
         if not cover_path or len(all_paths) < 2:
-            return web.json_response({"status": "error", "error": "Upload a cover image and at least one gallery image."}, status=400)
+            return web.json_response({"status": "error", "error": "Upload a cover image and at least one different gallery image."}, status=400)
 
         # A stable UUID per portal session prevents duplicate records on a retry.
         listing_id = session_info.get("listing_id") or str(uuid.uuid5(uuid.NAMESPACE_URL, f"pedrao22k-listing:{session_id}"))
@@ -1912,6 +2018,7 @@ async def on_ready():
         bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
         bot.add_view(ShopLaunchView())
         bot.add_view(PurchaseOfferActivityView())
+        bot.add_view(SellerApprovedActivityView())
         persistent_views_registered = True
     if not background_tasks_started:
         bot.loop.create_task(start_web_server())
