@@ -36,6 +36,10 @@ DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
 DEFAULT_SHOP_ENTRY_CHANNEL_ID = 1554581284112826429
 SHOP_ENTRY_CHANNEL_ID = int(os.environ.get("SHOP_ENTRY_CHANNEL_ID", str(DEFAULT_SHOP_ENTRY_CHANNEL_ID)) or DEFAULT_SHOP_ENTRY_CHANNEL_ID)
 
+SELLER_TICKET_CLOSE_DELAY_SECONDS = 60
+SELLER_PORTAL_ACTIVE_GRACE_SECONDS = 3600
+SELLER_TICKET_SCAN_INTERVAL_SECONDS = 15
+
 CRYPTO_ADDRESSES = {
     "USDT_TRC20": "TYourTRC20AddressHereXXXXXXXXXXXXXX",
     "USDT_BEP20": "0xYourBEP20AddressHereXXXXXXXXXXXXXX",
@@ -96,7 +100,7 @@ async def supabase_request(method: str, endpoint: str, *, json_data=None, body=N
             except Exception:
                 return text_body
 
-async def create_supabase_listing(listing_id: str, seller_id: int, title: str, price: float, currency: str, category: str | None, categories: list[str], description: str, image_paths: list):
+async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket_channel_id: int, title: str, price: float, currency: str, category: str | None, categories: list[str], description: str, image_paths: list):
     """Create one pending listing and its images; compensate on partial failure."""
     uploaded_objects = []
     try:
@@ -105,6 +109,7 @@ async def create_supabase_listing(listing_id: str, seller_id: int, title: str, p
             json_data={
                 "id": listing_id,
                 "seller_discord_id": str(seller_id),
+                "seller_ticket_channel_id": int(seller_ticket_channel_id),
                 "title": title,
                 "price": price,
                 "currency": currency,
@@ -158,8 +163,11 @@ async def set_listing_status(listing_id: str, status: str):
         return
 
     update_data = {"status": status}
+    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if status == "PUBLISHED":
-        update_data["published_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        update_data["published_at"] = now_iso
+    elif status == "SOLD":
+        update_data["sold_at"] = now_iso
 
     rows = await supabase_request(
         "PATCH", f"/rest/v1/listings?id=eq.{listing_id}",
@@ -188,6 +196,99 @@ async def fetch_listing_by_id(listing_id: str, *, published_only: bool = False):
         return rows[0]
     return None
 
+async def get_active_purchase_ticket(buyer_id: int):
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/purchase_tickets?buyer_discord_id=eq.{buyer_id}&status=eq.ACTIVE&select=id,buyer_discord_id,channel_id,guild_id,status&limit=1",
+    )
+    return rows[0] if isinstance(rows, list) and rows else None
+
+async def register_purchase_ticket(buyer_id: int, channel: discord.TextChannel):
+    rows = await supabase_request(
+        "POST", "/rest/v1/purchase_tickets",
+        json_data={
+            "buyer_discord_id": str(buyer_id),
+            "channel_id": str(channel.id),
+            "guild_id": str(channel.guild.id),
+            "status": "ACTIVE",
+        },
+    )
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("Could not persist the purchase ticket.")
+    return rows[0]
+
+async def close_persisted_purchase_ticket(channel_id: int):
+    try:
+        await supabase_request(
+            "PATCH",
+            f"/rest/v1/purchase_tickets?channel_id=eq.{channel_id}&status=eq.ACTIVE",
+            json_data={"status": "CLOSED", "closed_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+        )
+    except Exception as e:
+        print(f"Purchase ticket persistence close error for {channel_id}: {e}")
+
+async def get_ticket_offer(ticket_id: int, listing_id: str):
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/purchase_ticket_offers?ticket_id=eq.{ticket_id}&listing_id=eq.{listing_id}&select=id,ticket_id,listing_id,offer_number,status,sold_notified_at&limit=1",
+    )
+    return rows[0] if isinstance(rows, list) and rows else None
+
+async def add_ticket_offer(ticket_id: int, listing: dict):
+    rows = await supabase_request(
+        "POST", "/rest/v1/purchase_ticket_offers",
+        json_data={
+            "ticket_id": ticket_id,
+            "listing_id": str(listing["id"]),
+            "offer_number": int(listing["offer_number"]),
+            "status": "ACTIVE",
+        },
+    )
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("Could not persist the offer in the purchase ticket.")
+    return rows[0]
+
+async def remove_ticket_offer(ticket_id: int, listing_id: str):
+    await supabase_request("DELETE", f"/rest/v1/purchase_ticket_offers?ticket_id=eq.{ticket_id}&listing_id=eq.{listing_id}")
+
+async def get_ticket_offers(ticket_id: int, *, active_only: bool = False):
+    status_filter = "&status=eq.ACTIVE" if active_only else ""
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/purchase_ticket_offers?ticket_id=eq.{ticket_id}{status_filter}&select=id,ticket_id,listing_id,offer_number,status,sold_notified_at&order=created_at.asc",
+    )
+    return rows if isinstance(rows, list) else []
+
+async def get_active_ticket_by_channel(channel_id: int):
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/purchase_tickets?channel_id=eq.{channel_id}&status=eq.ACTIVE&select=id,buyer_discord_id,channel_id,guild_id,status&limit=1",
+    )
+    return rows[0] if isinstance(rows, list) and rows else None
+
+async def get_interested_active_tickets(listing_id: str):
+    links = await supabase_request(
+        "GET",
+        f"/rest/v1/purchase_ticket_offers?listing_id=eq.{listing_id}&select=id,ticket_id,listing_id,offer_number,status,sold_notified_at",
+    )
+    if not isinstance(links, list):
+        return []
+    result = []
+    for link in links:
+        ticket_rows = await supabase_request(
+            "GET",
+            f"/rest/v1/purchase_tickets?id=eq.{link['ticket_id']}&status=eq.ACTIVE&select=id,buyer_discord_id,channel_id,guild_id,status&limit=1",
+        )
+        if isinstance(ticket_rows, list) and ticket_rows:
+            result.append((ticket_rows[0], link))
+    return result
+
+async def mark_ticket_offer_sold(link_id: int, *, notified: bool = False):
+    data = {"status": "SOLD"}
+    if notified:
+        data["sold_notified_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    await supabase_request("PATCH", f"/rest/v1/purchase_ticket_offers?id=eq.{link_id}", json_data=data)
+
 def normalize_offer_number(value: str | int | None) -> Optional[int]:
     if value is None:
         return None
@@ -214,6 +315,26 @@ def seller_listing_topic(listing_id: str, offer_number: int, seller_id: int) -> 
     # Lets an Activity launched from the seller ticket resolve the exact approved offer
     # without using a public website link.
     return f"pedrao22k_seller_listing;listing_id={listing_id};offer_number={offer_number};seller_id={seller_id}"
+
+
+def seller_ticket_topic(seller_id: int, *, close_at: int = 0, hold_open: bool = False) -> str:
+    """Persistent seller-room state. Kept in the Discord topic so restarts do not lose auto-close state."""
+    return (
+        f"pedrao22k_seller_ticket;seller_id={int(seller_id)};"
+        f"close_at={int(close_at or 0)};hold={1 if hold_open else 0}"
+    )
+
+def parse_seller_ticket_topic(topic: Optional[str]) -> Optional[dict]:
+    result = _parse_topic_fields(topic, "pedrao22k_seller_ticket;")
+    if not result or not result.get("seller_id"):
+        return None
+    try:
+        result["seller_id"] = int(result["seller_id"])
+        result["close_at"] = int(result.get("close_at") or 0)
+        result["hold_open"] = str(result.get("hold", "0")) == "1"
+    except (TypeError, ValueError):
+        return None
+    return result
 
 def _parse_topic_fields(topic: Optional[str], prefix: str) -> Optional[dict]:
     if not topic or not topic.startswith(prefix):
@@ -384,6 +505,22 @@ class PurchaseOfferActivityView(View):
     )
     async def view_offer(self, interaction: discord.Interaction, button: Button):
         channel_id = getattr(interaction.channel, "id", 0)
+        # A unified purchase ticket can contain several offers. Resolve the
+        # exact offer from the message whose View Offer button was clicked and
+        # update only the Activity context stored in the channel topic.
+        try:
+            if isinstance(interaction.channel, discord.TextChannel) and interaction.message and interaction.message.embeds:
+                offer_number = normalize_offer_number(interaction.message.embeds[0].title or "")
+                if offer_number is not None:
+                    listing = await fetch_listing_by_offer_number(offer_number)
+                    ticket = await get_active_ticket_by_channel(interaction.channel.id)
+                    if listing and ticket:
+                        await interaction.channel.edit(
+                            topic=purchase_ticket_topic(str(listing["id"]), offer_number, int(ticket["buyer_discord_id"])),
+                            reason=f"Activity View Offer context -> {format_offer_id(offer_number)}",
+                        )
+        except Exception as e:
+            print(f"View Offer context update error for {channel_id}: {e}")
         await launch_activity_safely(interaction, f"view_offer:{channel_id}")
 
 
@@ -537,6 +674,7 @@ def is_staff_member(member: discord.Member) -> bool:
     return bool(member.guild_permissions.administrator or any(role.id == SUPPORT_ROLE_ID for role in member.roles))
 
 async def archive_and_delete_ticket(channel: discord.TextChannel, closed_by, *, reason: str, delay: int = 5):
+    await close_persisted_purchase_ticket(channel.id)
     log_text = "=== PEDRAO22K. TICKET TRANSCRIPT ===\n"
     log_text += f"Ticket Name: {channel.name}\n"
     log_text += f"Closed by: {closed_by} ({getattr(closed_by, 'id', 'system')})\n"
@@ -584,6 +722,294 @@ purchase_ticket_lock = asyncio.Lock()
 
 os.makedirs("uploaded_screenshots", exist_ok=True)
 active_web_sessions = {}
+
+def build_seller_portal_welcome_embed(seller) -> discord.Embed:
+    embed = discord.Embed(
+        title="⚡ CALL OF DUTY | SELLER VERIFICATION PORTAL",
+        description=(
+            f"Welcome {seller.mention}!\n\n"
+            "### 🌐 ALL-IN-ONE SELLER DASHBOARD:\n"
+            "Click the button below to open our web interface:\n"
+            "> 1️⃣ Fill in your **Offer Title**, **Asking Price**, and **Description**.\n"
+            "> 2️⃣ Select your account highlights (Top 250, Nukes, Iridescent).\n"
+            "> 3️⃣ Upload Cover Image and Gallery Screenshots.\n"
+            "> 4️⃣ Click **Submit** — your listing will be dispatched directly to Staff!\n\n"
+            "♻️ **You can submit multiple accounts from this same seller room.**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🔒 **Chat is locked:** Submissions are processed exclusively through the web portal."
+        ),
+        color=0xF59E0B,
+    )
+    return embed
+
+def register_seller_portal_session(seller_id: int, channel_id: int, launcher_msg: discord.Message, *, session_id: Optional[str] = None) -> str:
+    session_id = session_id or str(uuid.uuid4())[:8]
+    active_web_sessions[session_id] = {
+        "seller_id": int(seller_id),
+        "channel_id": int(channel_id),
+        "launcher_msg": launcher_msg,
+        "created_at": datetime.datetime.utcnow(),
+        "cover_file": None,
+        "secondary_files": [],
+        "finalize_lock": asyncio.Lock(),
+        "listing_id": None,
+        "all_paths": None,
+        "discord_cdn_urls": [],
+        "discord_uploaded_paths": [],
+        "review_dispatched": False,
+        "finalized": False,
+    }
+    return session_id
+
+async def set_seller_ticket_state(channel: discord.TextChannel, seller_id: int, *, close_at: int = 0, hold_open: bool = False, reason: str = "Seller ticket state update"):
+    await channel.edit(
+        topic=seller_ticket_topic(seller_id, close_at=close_at, hold_open=hold_open),
+        reason=reason,
+    )
+
+async def seller_ticket_has_pending(channel_id: int) -> bool:
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/listings?seller_ticket_channel_id=eq.{int(channel_id)}&status=eq.PENDING_REVIEW&select=id&limit=1",
+    )
+    return bool(isinstance(rows, list) and rows)
+
+async def backfill_legacy_pending_seller_listings(seller_id: int, channel_id: int):
+    """Attach pre-V5.60 pending listings to the seller room being adopted.
+
+    Before V5.60 the listings table did not store the seller ticket channel.
+    Historically there was only one active seller room per seller, so attaching
+    only unresolved PENDING_REVIEW rows is the safest migration and prevents
+    an old pending submission from being ignored by auto-close checks.
+    """
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/listings?seller_discord_id=eq.{int(seller_id)}&seller_ticket_channel_id=is.null&status=eq.PENDING_REVIEW&select=id",
+    )
+    if not isinstance(rows, list) or not rows:
+        return 0
+    await supabase_request(
+        "PATCH",
+        f"/rest/v1/listings?seller_discord_id=eq.{int(seller_id)}&seller_ticket_channel_id=is.null&status=eq.PENDING_REVIEW",
+        json_data={"seller_ticket_channel_id": int(channel_id)},
+    )
+    return len(rows)
+
+async def find_or_adopt_seller_ticket(guild: discord.Guild, sell_category: discord.CategoryChannel, seller: discord.Member) -> Optional[discord.TextChannel]:
+    # First use durable topic metadata across the whole guild. Staff may move a
+    # ticket to another category; that must not create a duplicate seller room.
+    for channel in guild.text_channels:
+        meta = parse_seller_ticket_topic(channel.topic)
+        if meta and int(meta.get("seller_id", 0)) == int(seller.id):
+            return channel
+
+    # Backward compatibility for seller rooms created before V5.60.
+    clean_user_name = seller.name.lower().replace(" ", "-")
+    legacy_name = f"🏷️・sell-{clean_user_name}"
+    legacy = discord.utils.get(sell_category.text_channels, name=legacy_name)
+    if not legacy:
+        return None
+
+    await set_seller_ticket_state(
+        legacy, int(seller.id), close_at=0, hold_open=False,
+        reason="Adopt legacy seller room into V5.60 multi-listing flow",
+    )
+    try:
+        migrated = await backfill_legacy_pending_seller_listings(int(seller.id), legacy.id)
+        if migrated:
+            print(f"Adopted seller room {legacy.id}: linked {migrated} legacy pending listing(s).")
+    except Exception as e:
+        print(f"Legacy seller pending-listing backfill error for {legacy.id}: {e}")
+    return legacy
+
+async def mark_seller_ticket_rejection_hold(channel: discord.TextChannel, seller_id: int):
+    await set_seller_ticket_state(
+        channel, seller_id, close_at=0, hold_open=True,
+        reason="Keep seller ticket open after rejected listing",
+    )
+
+async def mark_seller_ticket_submission_active(channel: discord.TextChannel, seller_id: int):
+    # A fresh submission means the seller acted on any previous rejection and the
+    # ticket must remain open while staff review is pending.
+    await set_seller_ticket_state(
+        channel, seller_id, close_at=0, hold_open=False,
+        reason="Seller submitted another listing",
+    )
+
+async def schedule_seller_ticket_close_if_idle(channel: discord.TextChannel, seller_id: int) -> bool:
+    meta = parse_seller_ticket_topic(channel.topic)
+    if meta and meta.get("hold_open"):
+        return False
+    if await seller_ticket_has_pending(channel.id):
+        if meta and meta.get("close_at"):
+            await set_seller_ticket_state(channel, seller_id, close_at=0, hold_open=False, reason="Pending listing keeps seller ticket open")
+        return False
+    close_at = int(time.time()) + SELLER_TICKET_CLOSE_DELAY_SECONDS
+    if meta and meta.get("close_at") and int(meta["close_at"]) > int(time.time()):
+        return True
+    await set_seller_ticket_state(
+        channel, seller_id, close_at=close_at, hold_open=False,
+        reason="All seller listings resolved; schedule automatic close",
+    )
+    try:
+        await channel.send(
+            "✅ **All current submissions have finished review.** This seller ticket will close automatically in **1 minute**. "
+            "Open the **Seller Portal** before then if you want to submit another account."
+        )
+    except Exception:
+        pass
+    return True
+
+async def rotate_seller_portal_session(channel: discord.TextChannel, seller, launcher_msg: discord.Message) -> discord.Message:
+    session_id = str(uuid.uuid4())[:8]
+    view = DirectPortalLauncherView(session_id=session_id)
+    try:
+        await launcher_msg.edit(embed=build_seller_portal_welcome_embed(seller), view=view)
+    except Exception:
+        support_role = channel.guild.get_role(SUPPORT_ROLE_ID)
+        role_ping = support_role.mention if support_role else ""
+        launcher_msg = await channel.send(
+            content=f"{seller.mention} {role_ping}",
+            embed=build_seller_portal_welcome_embed(seller),
+            view=view,
+        )
+    register_seller_portal_session(seller.id, channel.id, launcher_msg, session_id=session_id)
+    return launcher_msg
+
+async def ensure_seller_portal_launcher(channel: discord.TextChannel, seller_id: int):
+    seller = channel.guild.get_member(int(seller_id))
+    if seller is None:
+        try:
+            seller = await channel.guild.fetch_member(int(seller_id))
+        except Exception:
+            return
+    launcher_msg = None
+    try:
+        async for message in channel.history(limit=75):
+            if message.author.id != bot.user.id or not message.embeds:
+                continue
+            if message.embeds[0].title == "⚡ CALL OF DUTY | SELLER VERIFICATION PORTAL":
+                launcher_msg = message
+                break
+    except Exception as e:
+        print(f"Seller portal launcher lookup error for {channel.id}: {e}")
+    if launcher_msg is None:
+        support_role = channel.guild.get_role(SUPPORT_ROLE_ID)
+        role_ping = support_role.mention if support_role else ""
+        launcher_msg = await channel.send(
+            content=f"{seller.mention} {role_ping}",
+            embed=build_seller_portal_welcome_embed(seller),
+        )
+    await rotate_seller_portal_session(channel, seller, launcher_msg)
+
+def infer_legacy_seller_id_from_channel(channel: discord.TextChannel) -> Optional[int]:
+    """Infer the seller from legacy private-room permission overwrites.
+
+    A seller room historically grants View Channel directly to exactly one
+    non-bot member; the Admin is a role overwrite, not a member overwrite.
+    Ambiguous rooms are intentionally skipped instead of guessing.
+    """
+    candidates = []
+    for target, overwrite in channel.overwrites.items():
+        if isinstance(target, discord.Member) and not target.bot and overwrite.view_channel is True:
+            candidates.append(int(target.id))
+    return candidates[0] if len(candidates) == 1 else None
+
+async def link_listing_to_seller_ticket(listing_id: str, channel_id: int):
+    if not listing_id:
+        return
+    await supabase_request(
+        "PATCH", f"/rest/v1/listings?id=eq.{listing_id}",
+        json_data={"seller_ticket_channel_id": int(channel_id)},
+    )
+
+async def seller_ticket_has_any_listing(channel_id: int) -> bool:
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/listings?seller_ticket_channel_id=eq.{int(channel_id)}&select=id&limit=1",
+    )
+    return bool(isinstance(rows, list) and rows)
+
+async def refresh_seller_portal_launchers():
+    for guild in bot.guilds:
+        sell_category = guild.get_channel(SELL_CATEGORY_ID)
+        candidate_channels = list(guild.text_channels)
+        for channel in candidate_channels:
+            meta = parse_seller_ticket_topic(channel.topic)
+
+            # Migrate an approved V5.57/V5.58 seller room whose topic points to
+            # a single published listing. Multi-listing can no longer use that
+            # single-offer topic, so preserve the relation in Supabase instead.
+            if not meta:
+                old_listing_meta = parse_seller_listing_topic(channel.topic)
+                if old_listing_meta:
+                    try:
+                        seller_id = int(old_listing_meta["seller_id"])
+                        await link_listing_to_seller_ticket(str(old_listing_meta["listing_id"]), channel.id)
+                        await set_seller_ticket_state(
+                            channel, seller_id, close_at=0, hold_open=False,
+                            reason="Migrate legacy approved seller room to V5.60",
+                        )
+                        meta = parse_seller_ticket_topic(channel.topic)
+                    except Exception as e:
+                        print(f"Legacy approved seller-room migration error for {channel.id}: {e}")
+
+            # Migrate an older seller room with no structured topic. Only inspect
+            # channels in the seller category and only adopt when ownership is
+            # unambiguous from Discord permission overwrites.
+            if not meta and isinstance(sell_category, discord.CategoryChannel) and channel.category_id == sell_category.id:
+                seller_id = infer_legacy_seller_id_from_channel(channel)
+                if seller_id:
+                    try:
+                        await set_seller_ticket_state(
+                            channel, seller_id, close_at=0, hold_open=False,
+                            reason="Migrate legacy seller room to V5.60",
+                        )
+                        await backfill_legacy_pending_seller_listings(seller_id, channel.id)
+                        meta = parse_seller_ticket_topic(channel.topic)
+                    except Exception as e:
+                        print(f"Legacy seller-room migration error for {channel.id}: {e}")
+
+            if not meta:
+                continue
+            try:
+                seller_id = int(meta["seller_id"])
+                await ensure_seller_portal_launcher(channel, seller_id)
+                # Recover the rare case where Railway restarted after the last
+                # review finished but before the 60-second deadline was stored.
+                if (not meta.get("hold_open") and not meta.get("close_at")
+                        and await seller_ticket_has_any_listing(channel.id)
+                        and not await seller_ticket_has_pending(channel.id)):
+                    await schedule_seller_ticket_close_if_idle(channel, seller_id)
+            except Exception as e:
+                print(f"Seller portal restart recovery error for {channel.id}: {e}")
+
+async def seller_ticket_autoclose_task():
+    while True:
+        await asyncio.sleep(SELLER_TICKET_SCAN_INTERVAL_SECONDS)
+        now = int(time.time())
+        for guild in list(bot.guilds):
+            for channel in list(guild.text_channels):
+                meta = parse_seller_ticket_topic(channel.topic)
+                if not meta or not meta.get("close_at") or int(meta["close_at"]) > now:
+                    continue
+                try:
+                    if meta.get("hold_open") or await seller_ticket_has_pending(channel.id):
+                        await set_seller_ticket_state(
+                            channel, int(meta["seller_id"]), close_at=0, hold_open=bool(meta.get("hold_open")),
+                            reason="Automatic close cancelled after final safety check",
+                        )
+                        continue
+                    # Clear the deadline first so the scanner cannot start a second close.
+                    await set_seller_ticket_state(
+                        channel, int(meta["seller_id"]), close_at=0, hold_open=False,
+                        reason="Automatic seller ticket close started",
+                    )
+                    await archive_and_delete_ticket(
+                        channel, bot.user, reason="Seller listings completed; automatic close after 1 minute", delay=0
+                    )
+                except Exception as e:
+                    print(f"Seller ticket auto-close error for {channel.id}: {e}")
 
 def build_welcome_embed(member: discord.Member, guild: discord.Guild) -> discord.Embed:
     embed = discord.Embed(
@@ -651,6 +1077,22 @@ class ConfirmCloseView(View):
         channel_id = int(getattr(interaction, "channel_id", 0) or 0)
         if not await allow_single_interaction(interaction, f"confirm_close:{channel_id}", cooldown=60.0):
             return
+        seller_meta = parse_seller_ticket_topic(getattr(interaction.channel, "topic", None)) if isinstance(interaction.channel, discord.TextChannel) else None
+        if seller_meta:
+            try:
+                if await seller_ticket_has_pending(interaction.channel.id):
+                    return await interaction.response.edit_message(
+                        content="⚠️ **This seller ticket cannot be closed while an offer is waiting for staff review.**",
+                        embed=None,
+                        view=None,
+                    )
+            except Exception as e:
+                print(f"Seller pending-close safety check error: {e}")
+                return await interaction.response.edit_message(
+                    content="⚠️ I could not verify the pending offers safely. Please try again in a moment.",
+                    embed=None,
+                    view=None,
+                )
         for item in self.children:
             item.disabled = True
         await interaction.response.edit_message(
@@ -800,7 +1242,7 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
                         "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                         "🛠️ **WHAT YOU CAN DO:**\n"
                         "• Please re-read our safety rules (strictly no gamer tags, nicknames, or watermarks).\n"
-                        "• Contact staff in this ticket if you have any questions or want to submit new valid proofs."
+                        "• The **Seller Portal** remains available in this ticket so you can submit a corrected offer."
                     ),
                     color=0xEF4444,
                     timestamp=datetime.datetime.utcnow()
@@ -812,6 +1254,10 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
             except Exception as e:
                 print(f"Error editing launcher to rejected: {e}")
 
+        try:
+            await mark_seller_ticket_rejection_hold(self.ticket_channel, int(self.seller.id))
+        except Exception as e:
+            print(f"Seller ticket rejection hold error: {e}")
         try:
             await self.ticket_channel.send(f"⚠️ {self.seller.mention} **Your listing was declined.** Reason: `{reason}`")
         except:
@@ -974,16 +1420,6 @@ class AdminApprovalView(View):
                 raise RuntimeError("Published listing was not returned with an offer number.")
             offer_number = int(published_listing["offer_number"])
 
-            # Map this seller ticket to the exact public offer. The Shop Activity
-            # reads the channel context and opens this offer automatically.
-            try:
-                await self.ticket_channel.edit(
-                    topic=seller_listing_topic(self.listing_id, offer_number, int(self.seller.id)),
-                    reason=f"Published Accounts Shop offer {format_offer_id(offer_number)}",
-                )
-            except Exception as topic_error:
-                print(f"Seller ticket Activity context update error: {topic_error}")
-
             button.disabled = True
             self.reject.disabled = True
             await interaction.message.edit(content="✅ **Listing approved and published to Accounts Shop!**", view=self)
@@ -997,7 +1433,8 @@ class AdminApprovalView(View):
                         title="🎉 LISTING APPROVED & PUBLISHED ON ACCOUNTS SHOP",
                         description=(
                             f"Great news {self.seller.mention}! Your account listing has been approved and is now visible in our Accounts Shop.\n\n"
-                            f"🛒 **{format_offer_id(offer_number)} — Open your offer inside Discord using the button below.**"
+                            f"🛒 **Offer:** `{format_offer_id(offer_number)}`\n"
+                            "Use the button below to open the Accounts Shop inside Discord."
                         ),
                         color=0x10B981,
                         timestamp=datetime.datetime.utcnow()
@@ -1005,15 +1442,19 @@ class AdminApprovalView(View):
                     if self.seller.display_avatar:
                         approved_embed.set_thumbnail(url=self.seller.display_avatar.url)
                     approved_embed.set_footer(text="Pedrao22k Services • Listing Live")
-                    await self.launcher_msg.edit(embed=approved_embed, view=SellerApprovedActivityView())
+                    await self.launcher_msg.edit(embed=approved_embed, view=ShopLaunchView())
                 except Exception as e:
                     print(f"Error editing launcher to approved: {e}")
             try:
                 await self.ticket_channel.send(
-                    f"🎉 {self.seller.mention} **Your account has been approved and is now live in the Accounts Shop.**"
+                    f"🎉 {self.seller.mention} **{format_offer_id(offer_number)} has been approved and is now live in the Accounts Shop.**"
                 )
             except Exception:
                 pass
+            try:
+                await schedule_seller_ticket_close_if_idle(self.ticket_channel, int(self.seller.id))
+            except Exception as e:
+                print(f"Seller ticket close scheduling error: {e}")
         except Exception as e:
             print(f"Approval error: {e}")
             await interaction.followup.send(f"❌ Could not publish listing: `{e}`", ephemeral=True)
@@ -1065,29 +1506,36 @@ class SoldConfirmationView(View):
             return await interaction.followup.send(f"❌ Could not mark {format_offer_id(offer_number)} as sold: `{e}`", ephemeral=True)
 
         sold_embed = discord.Embed(
-            title="ACCOUNT SOLD",
-            description="This account has already been sold and is no longer available.\nThis ticket will now be closed.",
+            title="⚠️ OFFER UPDATE — NO LONGER AVAILABLE",
+            description=(
+                f"The account **{format_offer_id(offer_number)} - {self.listing['title']}** has been sold and is no longer available.\n\n"
+                "If you're interested in another account, return to the Accounts Shop and select a different offer."
+            ),
             color=0xEF4444,
             timestamp=datetime.datetime.utcnow(),
         )
+        sold_embed.set_footer(text="Pedrao22k Accounts Shop")
 
-        category = interaction.guild.get_channel(TICKET_CATEGORY_ID) if interaction.guild else None
-        close_tasks = []
-        if isinstance(category, discord.CategoryChannel):
-            for channel in list(category.text_channels):
-                meta = parse_purchase_ticket_topic(channel.topic)
-                if not meta or meta.get("offer_number") != offer_number:
+        notified_channels = 0
+        try:
+            interested = await get_interested_active_tickets(listing_id)
+            for ticket, link in interested:
+                # Idempotency: do not send the SOLD notice twice for the same
+                # ticket/offer even if the command is retried.
+                if link.get("sold_notified_at"):
                     continue
-                if self.source_channel_id and channel.id == self.source_channel_id:
+                channel = interaction.guild.get_channel(int(ticket["channel_id"])) if interaction.guild else None
+                if not isinstance(channel, discord.TextChannel):
+                    await close_persisted_purchase_ticket(int(ticket["channel_id"]))
                     continue
                 try:
                     await channel.send(embed=sold_embed)
+                    await mark_ticket_offer_sold(int(link["id"]), notified=True)
+                    notified_channels += 1
                 except Exception as e:
-                    print(f"Could not send sold notice to {channel.id}: {e}")
-                close_tasks.append(archive_and_delete_ticket(channel, interaction.user, reason=f"Account {format_offer_id(offer_number)} sold", delay=5))
-
-        if close_tasks:
-            asyncio.ensure_future(asyncio.gather(*close_tasks))
+                    print(f"Could not send sold notice to {ticket['channel_id']}: {e}")
+        except Exception as e:
+            print(f"Sold interested-ticket notification error: {e}")
 
         for item in self.children:
             item.disabled = True
@@ -1097,18 +1545,11 @@ class SoldConfirmationView(View):
             pass
 
         await interaction.followup.send(
-            f"✅ **{format_offer_id(offer_number)} - {self.listing['title']}** has been marked as sold. "
-            "It has been removed from the Accounts Shop. Other open tickets for this account are being closed.",
+            f"✅ **{format_offer_id(offer_number)} - {self.listing['title']}** has been marked as sold and removed from the Accounts Shop. "
+            f"Notified **{notified_channels}** active purchase ticket(s). Tickets remain open for other offers.",
             ephemeral=True,
         )
 
-        if self.source_channel_id:
-            source_channel = interaction.guild.get_channel(self.source_channel_id)
-            if isinstance(source_channel, discord.TextChannel):
-                try:
-                    await source_channel.send(f"✅ **{format_offer_id(offer_number)} has been marked as SOLD by {interaction.user.mention}.**")
-                except Exception:
-                    pass
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel_sold(self, interaction: discord.Interaction, button: Button):
@@ -1145,49 +1586,100 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
     offer_number = int(listing["offer_number"])
 
     async with purchase_ticket_lock:
-        # Search the whole guild, not only the current ticket category. This
-        # keeps the same buyer + listing mapped to the same active ticket even
-        # if staff moves that ticket to another category.
-        for channel in guild.text_channels:
-            meta = parse_purchase_ticket_topic(channel.topic)
-            if meta and meta.get("listing_id") == listing_id and meta.get("buyer_id") == buyer_id:
-                await ensure_purchase_ticket_activity_button(channel)
-                return channel, True
+        ticket_row = await get_active_purchase_ticket(buyer_id)
+        channel = None
 
-        support_role = guild.get_role(SUPPORT_ROLE_ID)
-        clean_user_name = re.sub(r"[^a-z0-9-]", "", buyer.name.lower().replace(" ", "-"))[:28] or str(buyer.id)[-6:]
-        channel_name = f"buy-account-{offer_number:02d}-{clean_user_name}"[:100]
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            buyer: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
-        }
-        if support_role:
-            overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True)
+        if ticket_row:
+            candidate = guild.get_channel(int(ticket_row["channel_id"]))
+            if isinstance(candidate, discord.TextChannel):
+                channel = candidate
+            else:
+                # Stale DB row: the Discord channel was deleted outside the normal
+                # Close Ticket flow. Close it in DB and allow a new ticket.
+                await close_persisted_purchase_ticket(int(ticket_row["channel_id"]))
+                ticket_row = None
 
-        channel = await guild.create_text_channel(
-            name=channel_name,
-            category=category,
-            topic=purchase_ticket_topic(listing_id, offer_number, buyer_id),
-            overwrites=overwrites,
-            reason=f"Accounts Shop contact for {format_offer_id(offer_number)}",
-        )
+        # Backward-compatible migration for a V5.58 ticket that already exists.
+        if channel is None:
+            for candidate in guild.text_channels:
+                meta = parse_purchase_ticket_topic(candidate.topic)
+                if meta and meta.get("buyer_id") == buyer_id:
+                    channel = candidate
+                    try:
+                        ticket_row = await register_purchase_ticket(buyer_id, channel)
+                    except Exception:
+                        ticket_row = await get_active_purchase_ticket(buyer_id)
+                    old_listing = await fetch_listing_by_id(str(meta.get("listing_id", "")))
+                    if ticket_row and old_listing and not await get_ticket_offer(int(ticket_row["id"]), str(old_listing["id"])):
+                        try:
+                            await add_ticket_offer(int(ticket_row["id"]), old_listing)
+                        except Exception as e:
+                            print(f"Legacy purchase ticket offer migration error: {e}")
+                    break
 
-        embed = discord.Embed(
-            title=f"{format_offer_id(offer_number)} - {listing['title']}",
-            description=(
-                f"**Price:** {format_listing_price(listing)}\n"
-                f"**Buyer:** {buyer.mention}\n\n"
-                "This ticket was created from the Accounts Shop."
-            ),
-            color=0xF59E0B,
-            timestamp=datetime.datetime.utcnow(),
-        )
-        embed.set_footer(text="Pedrao22k Accounts Shop")
-        role_ping = support_role.mention if support_role else ""
-        await channel.send(content=f"{buyer.mention} {role_ping}", embed=embed, view=PurchaseOfferActivityView())
-        await channel.send(view=CloseTicketView())
-        return channel, False
+        created_ticket = False
+        if channel is None:
+            support_role = guild.get_role(SUPPORT_ROLE_ID)
+            clean_user_name = re.sub(r"[^a-z0-9-]", "", buyer.name.lower().replace(" ", "-"))[:28] or str(buyer.id)[-6:]
+            channel_name = f"buy-account-{clean_user_name}"[:100]
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(view_channel=False),
+                buyer: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
+                guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+            }
+            support_role = guild.get_role(SUPPORT_ROLE_ID)
+            if support_role:
+                overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True)
+            channel = await guild.create_text_channel(
+                name=channel_name,
+                category=category,
+                topic=purchase_ticket_topic(listing_id, offer_number, buyer_id),
+                overwrites=overwrites,
+                reason=f"Accounts Shop purchase ticket for {buyer}",
+            )
+            try:
+                ticket_row = await register_purchase_ticket(buyer_id, channel)
+            except Exception:
+                try:
+                    await channel.delete(reason="Purchase ticket persistence failed")
+                except Exception:
+                    pass
+                raise
+            created_ticket = True
+
+        ticket_id = int(ticket_row["id"])
+        existing_offer = await get_ticket_offer(ticket_id, listing_id)
+        if existing_offer:
+            return channel, True, True
+
+        # Persist first to make rapid duplicate Contact Seller clicks idempotent.
+        link = await add_ticket_offer(ticket_id, listing)
+        try:
+            embed = discord.Embed(
+                title=f"{format_offer_id(offer_number)} - {listing['title']}",
+                description=(
+                    f"**Price:** {format_listing_price(listing)}\n"
+                    f"**Buyer:** {buyer.mention}"
+                    + ("\n\nThis ticket was created from the Accounts Shop." if created_ticket else "")
+                ),
+                color=0xF59E0B,
+                timestamp=datetime.datetime.utcnow(),
+            )
+            embed.set_footer(text="Pedrao22k Accounts Shop")
+            support_role = guild.get_role(SUPPORT_ROLE_ID)
+            role_ping = support_role.mention if support_role else ""
+            content = f"{buyer.mention} {role_ping}" if created_ticket else None
+            await channel.send(content=content, embed=embed, view=PurchaseOfferActivityView())
+            if created_ticket:
+                await channel.send(view=CloseTicketView())
+        except Exception:
+            try:
+                await remove_ticket_offer(ticket_id, listing_id)
+            except Exception as rollback_error:
+                print(f"Purchase ticket offer rollback error: {rollback_error}")
+            raise
+
+        return channel, not created_ticket, False
 
 async def handle_discord_exchange(request):
     if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
@@ -1243,7 +1735,7 @@ async def handle_contact_seller(request):
             listing = await fetch_listing_by_offer_number(offer_number, published_only=True)
         if not listing:
             return api_json({"status": "error", "error": "This account is no longer available."}, status=409)
-        channel, reused = await create_or_reuse_purchase_ticket(int(discord_user["id"]), listing)
+        channel, reused_ticket, duplicate_offer = await create_or_reuse_purchase_ticket(int(discord_user["id"]), listing)
     except Exception as e:
         print(f"Contact Seller error: {e}")
         return api_json({"status": "error", "error": str(e)}, status=500)
@@ -1254,7 +1746,10 @@ async def handle_contact_seller(request):
         "channel_id": str(channel.id),
         "guild_id": str(channel.guild.id),
         "channel_url": f"https://discord.com/channels/{channel.guild.id}/{channel.id}",
-        "reused": reused,
+        "reused": reused_ticket,
+        "reused_ticket": reused_ticket,
+        "duplicate_offer": duplicate_offer,
+        "offer_added": not duplicate_offer,
     })
 
 
@@ -1319,13 +1814,23 @@ class MarketplaceLauncherView(View):
         guild = interaction.guild
         sell_category = guild.get_channel(SELL_CATEGORY_ID)
         support_role = guild.get_role(SUPPORT_ROLE_ID)
+        if not isinstance(sell_category, discord.CategoryChannel):
+            return await interaction.followup.send("❌ Seller ticket category was not found. Please contact staff.", ephemeral=True)
 
         clean_user_name = interaction.user.name.lower().replace(" ", "-")
         channel_name = f"🏷️・sell-{clean_user_name}"
 
-        existing = discord.utils.get(sell_category.text_channels, name=channel_name)
+        existing = await find_or_adopt_seller_ticket(guild, sell_category, interaction.user)
         if existing:
-            return await interaction.followup.send(f"⚠️ You already have an open seller ticket: {existing.mention}", ephemeral=True)
+            # Make sure a restart/old session never leaves the seller with a dead portal button.
+            try:
+                await ensure_seller_portal_launcher(existing, int(interaction.user.id))
+            except Exception as e:
+                print(f"Seller portal refresh on reuse error for {existing.id}: {e}")
+            return await interaction.followup.send(
+                f"♻️ Your seller room is already open: {existing.mention}\nUse **Open Seller Portal** there to submit another account.",
+                ephemeral=True,
+            )
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -1335,45 +1840,25 @@ class MarketplaceLauncherView(View):
         if support_role:
             overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
 
-        sell_ticket_channel = await guild.create_text_channel(name=channel_name, category=sell_category, overwrites=overwrites)
-        session_id = str(uuid.uuid4())[:8]
-
-        welcome_embed = discord.Embed(
-            title="⚡ CALL OF DUTY | SELLER VERIFICATION PORTAL",
-            description=(
-                f"Welcome {interaction.user.mention}!\n\n"
-                "### 🌐 ALL-IN-ONE SELLER DASHBOARD:\n"
-                "Click the button below to open our web interface:\n"
-                "> 1️⃣ Fill in your **Offer Title**, **Asking Price**, and **Description**.\n"
-                "> 2️⃣ Select your account highlights (Top 250, Nukes, Iridescent).\n"
-                "> 3️⃣ Upload Cover Image and Gallery Screenshots.\n"
-                "> 4️⃣ Click **Submit** — your listing will be dispatched directly to Staff!\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "🔒 **Chat is locked:** Submissions are processed exclusively through the web portal."
-            ),
-            color=0xF59E0B
+        sell_ticket_channel = await guild.create_text_channel(
+            name=channel_name,
+            category=sell_category,
+            overwrites=overwrites,
+            topic=seller_ticket_topic(interaction.user.id),
         )
+        session_id = str(uuid.uuid4())[:8]
         role_ping = support_role.mention if support_role else ""
-
-        launcher_msg = await sell_ticket_channel.send(content=f"{interaction.user.mention} {role_ping}", embed=welcome_embed, view=DirectPortalLauncherView(session_id=session_id))
+        launcher_msg = await sell_ticket_channel.send(
+            content=f"{interaction.user.mention} {role_ping}",
+            embed=build_seller_portal_welcome_embed(interaction.user),
+            view=DirectPortalLauncherView(session_id=session_id),
+        )
+        register_seller_portal_session(
+            interaction.user.id, sell_ticket_channel.id, launcher_msg, session_id=session_id
+        )
         await sell_ticket_channel.send(view=CloseTicketView())
         await interaction.followup.send(f"✅ Your seller room has been created: {sell_ticket_channel.mention}", ephemeral=True)
 
-        active_web_sessions[session_id] = {
-            "seller_id": interaction.user.id,
-            "channel_id": sell_ticket_channel.id,
-            "launcher_msg": launcher_msg,
-            "created_at": datetime.datetime.utcnow(),
-            "cover_file": None,
-            "secondary_files": [],
-            "finalize_lock": asyncio.Lock(),
-            "listing_id": None,
-            "all_paths": None,
-            "discord_cdn_urls": [],
-            "discord_uploaded_paths": [],
-            "review_dispatched": False,
-            "finalized": False
-        }
 
 HTML_PAGE = """<!DOCTYPE html>
 <html lang="en">
@@ -1723,6 +2208,24 @@ async def ping_handler(request):
     return web.Response(text="Pedrao22k Bot is Online 24/7!", status=200)
 
 async def handle_web_page(request):
+    session_id = str(request.query.get("session", "")).strip()
+    session_info = active_web_sessions.get(session_id)
+    if session_info and not session_info.get("finalized"):
+        channel = bot.get_channel(int(session_info.get("channel_id", 0) or 0))
+        if isinstance(channel, discord.TextChannel):
+            meta = parse_seller_ticket_topic(channel.topic)
+            if meta and not meta.get("hold_open"):
+                try:
+                    # Seller actively opened the form. Give them enough time to
+                    # finish it instead of deleting the ticket mid-submission.
+                    await set_seller_ticket_state(
+                        channel, int(meta["seller_id"]),
+                        close_at=int(time.time()) + SELLER_PORTAL_ACTIVE_GRACE_SECONDS,
+                        hold_open=False,
+                        reason="Seller Portal opened; postpone automatic close",
+                    )
+                except Exception as e:
+                    print(f"Seller portal open grace error: {e}")
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
 async def handle_upload_images_only(request):
@@ -1846,11 +2349,15 @@ async def _handle_finalize_listing(request, data):
         listing_id = session_info.get("listing_id") or str(uuid.uuid5(uuid.NAMESPACE_URL, f"pedrao22k-listing:{session_id}"))
         if not session_info.get("listing_id"):
             try:
-                await create_supabase_listing(listing_id, seller_id, offer_title, price_value, currency, category, categories, description, all_paths)
+                await create_supabase_listing(listing_id, seller_id, channel_id, offer_title, price_value, currency, category, categories, description, all_paths)
                 session_info["listing_id"] = listing_id
             except Exception as e:
                 print(f"Supabase listing creation error: {e}")
                 return web.json_response({"status": "error", "error": "Could not save your listing and screenshots to the shop database. Please contact staff before retrying."}, status=502)
+
+        saved_listing = await fetch_listing_by_id(listing_id)
+        submitted_offer_number = normalize_offer_number(saved_listing.get("offer_number")) if saved_listing else None
+        submitted_offer_id = format_offer_id(submitted_offer_number) if submitted_offer_number is not None else "Pending ID"
 
         clean_price_num = str(price_value)
         discord_cdn_urls = session_info["discord_cdn_urls"]
@@ -1870,11 +2377,12 @@ async def _handle_finalize_listing(request, data):
                 pass
 
         submitted_embed = discord.Embed(
-            title="🚀 OFFER SUCCESSFULLY SUBMITTED TO STAFF",
+            title=f"🚀 {submitted_offer_id} — OFFER SUBMITTED TO STAFF",
             description=(
                 f"Thank you {seller.mention}! Your Call of Duty account listing has been securely recorded.\n\n"
                 "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 "### 📋 SUBMISSION OVERVIEW:\n"
+                f"> 🆔 **Offer:** `{submitted_offer_id}`\n"
                 f"> 🏷️ **Offer Title:** `{offer_title}`\n"
                 f"> 💰 **Asking Price:** `{clean_price_num} {currency}`\n"
                 f"> 🌟 **Highlights:** `{items_list}`\n"
@@ -1889,7 +2397,7 @@ async def _handle_finalize_listing(request, data):
         submitted_embed.set_footer(text="Pedrao22k Services • Awaiting Review")
 
         admin_embed = discord.Embed(
-            title=f"📥 {offer_title}",
+            title=f"📥 {submitted_offer_id} — {offer_title}",
             description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
             color=0xF59E0B,
             timestamp=datetime.datetime.utcnow()
@@ -1901,6 +2409,10 @@ async def _handle_finalize_listing(request, data):
         if discord_cdn_urls:
             admin_embed.set_image(url=discord_cdn_urls[0])
 
+        # Every listing gets its own status message. The portal launcher stays
+        # untouched so the seller can submit another account with one click.
+        submission_msg = await ticket_channel.send(embed=submitted_embed)
+
         if not session_info.get("review_dispatched"):
             role_ping = support_role.mention if support_role else "@here"
             approval_view = AdminApprovalView(
@@ -1908,7 +2420,7 @@ async def _handle_finalize_listing(request, data):
                 embed_data=admin_embed,
                 ticket_channel=ticket_channel,
                 images=discord_cdn_urls,
-                launcher_msg=launcher_msg,
+                launcher_msg=submission_msg,
                 offer_title=offer_title,
                 price_num=clean_price_num,
                 currency=currency,
@@ -1925,13 +2437,21 @@ async def _handle_finalize_listing(request, data):
             session_info["review_dispatched"] = True
 
         try:
-            await launcher_msg.edit(embed=submitted_embed, view=None)
-            await ticket_channel.send(f"🔔 {seller.mention} **Your offer was submitted! Please wait for staff review.** ⏳")
+            await mark_seller_ticket_submission_active(ticket_channel, seller_id)
         except Exception as e:
-            print(f"Error updating seller submission messages: {e}")
+            print(f"Seller ticket submission state error: {e}")
 
         session_info["finalized"] = True
-        return web.json_response({"status": "ok", "count": len(discord_cdn_urls)})
+        try:
+            await rotate_seller_portal_session(ticket_channel, seller, launcher_msg)
+        except Exception as e:
+            print(f"Seller portal rotation error: {e}")
+
+        return web.json_response({
+            "status": "ok",
+            "count": len(discord_cdn_urls),
+            "offer_number": submitted_offer_number,
+        })
     except Exception as e:
         print(f"Finalize error: {e}")
         return web.json_response({"status": "error", "error": "Submission could not be completed. Please retry once; if it continues, contact staff."}, status=500)
@@ -1953,7 +2473,12 @@ async def session_cleaner_task():
     while True:
         await asyncio.sleep(300)
         now = datetime.datetime.utcnow()
-        expired = [sid for sid, data in active_web_sessions.items() if (now - data["created_at"]).total_seconds() > 3600]
+        expired = []
+        for sid, data in list(active_web_sessions.items()):
+            age = (now - data["created_at"]).total_seconds()
+            channel_exists = bot.get_channel(int(data.get("channel_id", 0) or 0)) is not None
+            if (data.get("finalized") and age > 3600) or (not channel_exists and age > 300):
+                expired.append(sid)
         for sid in expired:
             active_web_sessions.pop(sid, None)
 
@@ -2025,10 +2550,12 @@ async def on_ready():
     if not background_tasks_started:
         bot.loop.create_task(start_web_server())
         bot.loop.create_task(session_cleaner_task())
+        bot.loop.create_task(seller_ticket_autoclose_task())
         background_tasks_started = True
     try:
         await ensure_shop_entry_message()
         await refresh_purchase_ticket_activity_buttons()
+        await refresh_seller_portal_launchers()
     except Exception as e:
         print(f"Accounts Shop Activity setup error: {e}")
 
@@ -2048,7 +2575,7 @@ async def on_ready():
             print(f"Slash command sync error: {e}")
     print(f"Logged in as {bot.user.name} | Railway Cloud Engine Online 24/7!")
 
-@bot.tree.command(name="sold", description="Mark the account in this purchase ticket as sold.")
+@bot.tree.command(name="sold", description="Mark a published Accounts Shop offer as sold.")
 @app_commands.describe(account_id="Optional account ID, for example 01#")
 @app_commands.default_permissions(administrator=True)
 async def sold_command(interaction: discord.Interaction, account_id: Optional[str] = None):
@@ -2057,21 +2584,28 @@ async def sold_command(interaction: discord.Interaction, account_id: Optional[st
     if not is_staff_member(interaction.user):
         return await interaction.response.send_message("❌ This command is restricted to staff.", ephemeral=True)
 
-    source_channel_id = None
-    offer_number = None
+    source_channel_id = interaction.channel.id if isinstance(interaction.channel, discord.TextChannel) else None
+    offer_number = normalize_offer_number(account_id)
+
     if isinstance(interaction.channel, discord.TextChannel):
-        meta = parse_purchase_ticket_topic(interaction.channel.topic)
-        if meta:
-            offer_number = int(meta["offer_number"])
-            source_channel_id = interaction.channel.id
+        ticket_row = await get_active_ticket_by_channel(interaction.channel.id)
+        if ticket_row:
+            active_offers = await get_ticket_offers(int(ticket_row["id"]), active_only=True)
+            if offer_number is None:
+                if len(active_offers) == 1:
+                    offer_number = int(active_offers[0]["offer_number"])
+                elif len(active_offers) > 1:
+                    ids = ", ".join(format_offer_id(int(x["offer_number"])) for x in active_offers)
+                    return await interaction.response.send_message(
+                        f"⚠️ This ticket contains multiple available offers: **{ids}**. Use `/sold` and provide the exact account ID, for example `02#`.",
+                        ephemeral=True,
+                    )
 
     if offer_number is None:
-        offer_number = normalize_offer_number(account_id)
-        if offer_number is None:
-            return await interaction.response.send_message(
-                "❌ No account ID was detected. Use this command inside a Buy Account ticket, or provide an ID such as `01#`.",
-                ephemeral=True,
-            )
+        return await interaction.response.send_message(
+            "❌ No account ID was detected. Provide an ID such as `01#`.",
+            ephemeral=True,
+        )
 
     try:
         listing = await fetch_listing_by_offer_number(offer_number)
@@ -2086,7 +2620,7 @@ async def sold_command(interaction: discord.Interaction, account_id: Optional[st
         title=f"Mark {format_offer_id(offer_number)} as sold?",
         description=(
             f"**{format_offer_id(offer_number)} - {listing['title']}**\n\n"
-            "This will remove the account from the Accounts Shop and close any other open buyer tickets for this account."
+            "This will remove the account from the Accounts Shop and notify every active purchase ticket interested in this offer. Other offers and tickets will remain open."
         ),
         color=0xEF4444,
     )
