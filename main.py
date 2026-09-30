@@ -205,6 +205,50 @@ def parse_purchase_ticket_topic(topic: Optional[str]) -> Optional[dict]:
     return result
 
 
+
+# Global anti-double-click guard for Discord component/modal actions that create
+# messages, tickets, confirmations, publications, or other side effects.
+# Navigation buttons (Prev/Next) are intentionally excluded so normal browsing
+# remains responsive.
+INTERACTION_CLICK_GUARD_SECONDS = 6.0
+_interaction_click_guard: dict[tuple[int, int, str], float] = {}
+
+
+async def allow_single_interaction(
+    interaction: discord.Interaction,
+    action_key: str,
+    *,
+    cooldown: float = INTERACTION_CLICK_GUARD_SECONDS,
+    acknowledge_duplicate: bool = True,
+) -> bool:
+    """Return True only for the first click in a short window.
+
+    Rapid duplicate clicks are silently acknowledged so Discord does not show
+    "This interaction failed" and no duplicate message/action is created.
+    """
+    now = time.monotonic()
+    user_id = int(getattr(interaction.user, "id", 0) or 0)
+    channel_id = int(getattr(interaction, "channel_id", 0) or 0)
+    key = (user_id, channel_id, action_key)
+
+    if len(_interaction_click_guard) > 4000:
+        cutoff = now - 120.0
+        for old_key, old_time in list(_interaction_click_guard.items()):
+            if old_time < cutoff:
+                _interaction_click_guard.pop(old_key, None)
+
+    previous = _interaction_click_guard.get(key, 0.0)
+    if now - previous < cooldown:
+        if acknowledge_duplicate and not interaction.response.is_done():
+            try:
+                await interaction.response.defer(ephemeral=True)
+            except Exception as e:
+                print(f"Duplicate interaction ACK error ({action_key}): {e}")
+        return False
+
+    _interaction_click_guard[key] = now
+    return True
+
 # Prevent duplicate Activity launch interactions from rapid/repeated clicks.
 # Discord requires each component interaction to be acknowledged quickly; repeated
 # LAUNCH_ACTIVITY callbacks while the same Activity is already opening can be
@@ -535,13 +579,25 @@ class ConfirmCloseView(View):
 
     @discord.ui.button(label="Confirm Close", style=discord.ButtonStyle.danger, emoji="🗑️")
     async def confirm_close(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("⏳ **Archiving transcript and deleting channel in 5 seconds...**")
+        channel_id = int(getattr(interaction, "channel_id", 0) or 0)
+        if not await allow_single_interaction(interaction, f"confirm_close:{channel_id}", cooldown=60.0):
+            return
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content="⏳ **Archiving transcript and deleting channel in 5 seconds...**",
+            embed=None,
+            view=self,
+        )
         await archive_and_delete_ticket(interaction.channel, interaction.user, reason="Manual ticket closure", delay=5)
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel_close(self, interaction: discord.Interaction, button: Button):
-        await interaction.message.delete()
-        await interaction.response.send_message("❌ Ticket closure cancelled.", ephemeral=True)
+        if not await allow_single_interaction(interaction, "cancel_close", cooldown=3.0):
+            return
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="❌ Ticket closure cancelled.", embed=None, view=self)
 
 class CloseTicketView(View):
     def __init__(self):
@@ -549,12 +605,16 @@ class CloseTicketView(View):
 
     @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒", custom_id="close_ticket_btn")
     async def close_ticket_prompt(self, interaction: discord.Interaction, button: Button):
+        if not await allow_single_interaction(interaction, "close_ticket_prompt", cooldown=8.0):
+            return
         embed = discord.Embed(
             title="⚠️ Close Ticket Confirmation",
             description="Are you sure you want to close this ticket?\nA full transcript will be automatically saved to staff logs.",
             color=0xF59E0B
         )
-        await interaction.response.send_message(embed=embed, view=ConfirmCloseView())
+        # Keep the confirmation private so repeated/abandoned confirmations never
+        # clutter the ticket for everyone.
+        await interaction.response.send_message(embed=embed, view=ConfirmCloseView(), ephemeral=True)
 
 class TicketSelect(Select):
     def __init__(self):
@@ -567,6 +627,8 @@ class TicketSelect(Select):
         super().__init__(placeholder="⚡ Select a service to open your ticket...", min_values=1, max_values=1, options=options, custom_id="ticket_category_select")
 
     async def callback(self, interaction: discord.Interaction):
+        if not await allow_single_interaction(interaction, "ticket_category_select", cooldown=12.0):
+            return
         guild = interaction.guild
         category = guild.get_channel(TICKET_CATEGORY_ID)
         support_role = guild.get_role(SUPPORT_ROLE_ID)
@@ -634,6 +696,8 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
         self.add_item(self.reason_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await allow_single_interaction(interaction, f"reject_submit:{self.listing_id}", cooldown=30.0):
+            return
         reason = self.reason_input.value.strip()
         try:
             await set_listing_status(self.listing_id, "REJECTED")
@@ -730,6 +794,8 @@ class MarketplaceCarouselView(View):
 
     @discord.ui.button(label="Buy This Account", style=discord.ButtonStyle.success, emoji="⚡", custom_id="buy_account_direct_btn", row=1)
     async def buy_btn(self, interaction: discord.Interaction, button: Button):
+        if not await allow_single_interaction(interaction, "legacy_buy_account", cooldown=12.0):
+            return
         if self.is_sold:
             return await interaction.response.send_message("❌ This account has already been sold.", ephemeral=True)
 
@@ -829,6 +895,8 @@ class AdminApprovalView(View):
 
     @discord.ui.button(label="Approve & Publish to Shop", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def approve(self, interaction: discord.Interaction, button: Button):
+        if not await allow_single_interaction(interaction, f"approve_listing:{self.listing_id}", cooldown=30.0):
+            return
         await interaction.response.defer(ephemeral=True)
         try:
             await set_listing_status(self.listing_id, "PUBLISHED")
@@ -863,6 +931,8 @@ class AdminApprovalView(View):
 
     @discord.ui.button(label="Reject Listing", style=discord.ButtonStyle.danger, emoji="❌", row=1)
     async def reject(self, interaction: discord.Interaction, button: Button):
+        if not await allow_single_interaction(interaction, f"reject_listing:{self.listing_id}", cooldown=8.0):
+            return
         modal = RejectReasonModal(
             seller=self.seller,
             ticket_channel=self.ticket_channel,
@@ -886,6 +956,9 @@ class SoldConfirmationView(View):
 
     @discord.ui.button(label="Confirm Sold", style=discord.ButtonStyle.danger, emoji="✅")
     async def confirm_sold(self, interaction: discord.Interaction, button: Button):
+        offer_number_guard = int(self.listing.get("offer_number", 0) or 0)
+        if not await allow_single_interaction(interaction, f"confirm_sold:{offer_number_guard}", cooldown=60.0):
+            return
         if interaction.user.id != self.requester_id or not isinstance(interaction.user, discord.Member) or not is_staff_member(interaction.user):
             return await interaction.response.send_message("❌ You are not allowed to confirm this action.", ephemeral=True)
 
@@ -1147,6 +1220,8 @@ class MarketplaceLauncherView(View):
 
     @discord.ui.button(label="Sell Call of Duty Account", style=discord.ButtonStyle.primary, emoji="🎮", custom_id="sell_cod_account_btn")
     async def open_ticket_direct(self, interaction: discord.Interaction, button: Button):
+        if not await allow_single_interaction(interaction, "sell_account_ticket", cooldown=12.0):
+            return
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
@@ -1792,6 +1867,8 @@ class FeedbackModal(Modal, title="Rate Your Experience"):
         self.add_item(self.review_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await allow_single_interaction(interaction, "feedback_submit", cooldown=30.0):
+            return
         stars = self.rating_input.value.strip()
         comment = self.review_input.value.strip()
         vouch_channel = interaction.guild.get_channel(VOUCH_CHANNEL_ID)
@@ -1808,6 +1885,8 @@ class FeedbackView(View):
 
     @discord.ui.button(label="Leave Feedback ⭐", style=discord.ButtonStyle.success, emoji="✍️", custom_id="leave_vouch_btn")
     async def open_feedback_modal(self, interaction: discord.Interaction, button: Button):
+        if not await allow_single_interaction(interaction, "open_feedback_modal", cooldown=6.0):
+            return
         await interaction.response.send_modal(FeedbackModal())
 
 persistent_views_registered = False
