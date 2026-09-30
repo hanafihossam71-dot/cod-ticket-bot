@@ -6,6 +6,7 @@ import asyncio
 import io
 import datetime
 import os
+import time
 import uuid
 import re
 import aiohttp
@@ -204,6 +205,62 @@ def parse_purchase_ticket_topic(topic: Optional[str]) -> Optional[dict]:
     return result
 
 
+# Prevent duplicate Activity launch interactions from rapid/repeated clicks.
+# Discord requires each component interaction to be acknowledged quickly; repeated
+# LAUNCH_ACTIVITY callbacks while the same Activity is already opening can be
+# rejected by the client/API and surface as "This interaction failed".
+ACTIVITY_CLICK_COOLDOWN_SECONDS = 5.0
+_activity_click_guard: dict[tuple[int, str], float] = {}
+
+
+async def launch_activity_safely(interaction: discord.Interaction, action_key: str) -> bool:
+    """Launch the Discord Activity once and silently ACK rapid duplicate clicks."""
+    now = time.monotonic()
+    user_id = int(interaction.user.id)
+    key = (user_id, action_key)
+
+    # Keep this small in long-running processes.
+    if len(_activity_click_guard) > 2000:
+        cutoff = now - 60.0
+        for old_key, old_time in list(_activity_click_guard.items()):
+            if old_time < cutoff:
+                _activity_click_guard.pop(old_key, None)
+
+    previous = _activity_click_guard.get(key, 0.0)
+    if now - previous < ACTIVITY_CLICK_COOLDOWN_SECONDS:
+        # Acknowledge the extra click without attempting to launch a second
+        # Activity instance. For component interactions this produces no visible
+        # "thinking" message and avoids Discord's red interaction-failed banner.
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except Exception as e:
+            print(f"Duplicate Activity click ACK error ({action_key}): {e}")
+        return False
+
+    _activity_click_guard[key] = now
+
+    try:
+        await interaction.response.launch_activity()
+        return True
+    except Exception as e:
+        print(f"Activity launch error ({action_key}): {e}")
+
+        # If Discord rejected the launch before the interaction was acknowledged,
+        # send a normal ephemeral response so the user does not receive the generic
+        # red "interaction failed" state.
+        if not interaction.response.is_done():
+            try:
+                await interaction.response.send_message(
+                    "⚠️ The Accounts Shop is already opening or Discord temporarily rejected the request. "
+                    "Wait a few seconds and click once.",
+                    ephemeral=True,
+                )
+            except Exception as ack_error:
+                print(f"Activity launch failure ACK error ({action_key}): {ack_error}")
+        return False
+
+
 class ShopLaunchView(View):
     """Persistent button used in the public accounts-for-sale text channel."""
     def __init__(self):
@@ -215,17 +272,7 @@ class ShopLaunchView(View):
         custom_id="pedrao22k_open_accounts_shop_activity",
     )
     async def open_shop(self, interaction: discord.Interaction, button: Button):
-        try:
-            await interaction.response.launch_activity()
-        except Exception as e:
-            print(f"Accounts Shop Activity launch error: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("❌ The Accounts Shop could not be opened. Please try again.", ephemeral=True)
-            else:
-                try:
-                    await interaction.followup.send("❌ The Accounts Shop could not be opened. Please try again.", ephemeral=True)
-                except Exception:
-                    pass
+        await launch_activity_safely(interaction, "shop_entry")
 
 
 class PurchaseOfferActivityView(View):
@@ -244,17 +291,8 @@ class PurchaseOfferActivityView(View):
         custom_id="pedrao22k_view_offer_activity",
     )
     async def view_offer(self, interaction: discord.Interaction, button: Button):
-        try:
-            await interaction.response.launch_activity()
-        except Exception as e:
-            print(f"View Offer Activity launch error: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("❌ The Accounts Shop could not be opened. Please try again.", ephemeral=True)
-            else:
-                try:
-                    await interaction.followup.send("❌ The Accounts Shop could not be opened. Please try again.", ephemeral=True)
-                except Exception:
-                    pass
+        channel_id = getattr(interaction.channel, "id", 0)
+        await launch_activity_safely(interaction, f"view_offer:{channel_id}")
 
 
 def find_shop_entry_channel() -> Optional[discord.TextChannel]:
@@ -306,7 +344,7 @@ async def ensure_shop_entry_read_only(channel: discord.TextChannel):
 
 
 async def ensure_shop_entry_message():
-    """Keep the public shop entry channel visually clean: one button, no text/embed."""
+    """Keep the Shop entry channel to exactly one launcher message and no conversation history."""
     channel = find_shop_entry_channel()
     if channel is None:
         print("Accounts Shop entry channel not found. Set SHOP_ENTRY_CHANNEL_ID or create a text channel containing 'accounts-for-sale'.")
@@ -314,39 +352,47 @@ async def ensure_shop_entry_message():
 
     await ensure_shop_entry_read_only(channel)
 
-    launch_messages = []
+    launcher_to_keep = None
+    messages_to_delete = []
     try:
-        async for message in channel.history(limit=100):
-            if message.author.id != bot.user.id:
-                continue
+        # Scan the full channel so old conversation does not remain visible below the Activity.
+        # History is newest-first, so the first launcher found is the one we preserve.
+        async for message in channel.history(limit=None):
+            is_launcher = False
+            if bot.user and message.author.id == bot.user.id:
+                is_legacy_launcher = False
+                if message.embeds:
+                    footer = message.embeds[0].footer.text if message.embeds[0].footer else None
+                    is_legacy_launcher = footer == "Pedrao22k Accounts Shop • Live Inventory"
+                is_launcher = is_legacy_launcher or _message_has_shop_launch_button(message)
 
-            is_legacy_launcher = False
-            if message.embeds:
-                footer = message.embeds[0].footer.text if message.embeds[0].footer else None
-                is_legacy_launcher = footer == "Pedrao22k Accounts Shop • Live Inventory"
-
-            if is_legacy_launcher or _message_has_shop_launch_button(message):
-                launch_messages.append(message)
+            if is_launcher and launcher_to_keep is None:
+                launcher_to_keep = message
+            else:
+                messages_to_delete.append(message)
     except Exception as e:
         print(f"Accounts Shop entry history scan error: {e}")
 
     try:
-        if launch_messages:
-            # Reuse the newest launcher message so old channel links/history remain stable.
-            existing = launch_messages[0]
-            await existing.edit(content=None, embeds=[], view=ShopLaunchView())
-
-            # Remove duplicate launcher messages from previous versions, if any.
-            for duplicate in launch_messages[1:]:
-                try:
-                    await duplicate.delete()
-                except Exception as delete_error:
-                    print(f"Accounts Shop duplicate launcher cleanup error ({duplicate.id}): {delete_error}")
+        if launcher_to_keep is None:
+            launcher_to_keep = await channel.send(view=ShopLaunchView())
         else:
-            # Discord allows a message whose only visible payload is an interactive component.
-            await channel.send(view=ShopLaunchView())
+            await launcher_to_keep.edit(content=None, embeds=[], view=ShopLaunchView())
 
-        print(f"✅ Clean Accounts Shop launcher ready in #{channel.name} ({channel.id}).")
+        deleted = 0
+        for old_message in messages_to_delete:
+            try:
+                await old_message.delete()
+                deleted += 1
+            except discord.NotFound:
+                pass
+            except Exception as delete_error:
+                print(f"Accounts Shop channel cleanup error ({old_message.id}): {delete_error}")
+
+        print(
+            f"✅ Accounts Shop channel locked and cleaned in #{channel.name} ({channel.id}). "
+            f"Removed {deleted} old message(s); only OPEN ACCOUNTS SHOP remains."
+        )
     except Exception as e:
         print(f"Accounts Shop entry message error: {e}")
 
@@ -460,6 +506,17 @@ async def on_member_join(member: discord.Member):
 
 @bot.event
 async def on_message(message: discord.Message):
+    # Keep the public Accounts Shop entry channel permanently clean.
+    # Normal members are blocked by channel permissions; this also removes
+    # messages from admins/other bots that can bypass those overwrites.
+    if getattr(message.channel, "id", None) == SHOP_ENTRY_CHANNEL_ID:
+        if not bot.user or message.author.id != bot.user.id:
+            try:
+                await message.delete()
+            except Exception as e:
+                print(f"Accounts Shop live cleanup error for message {message.id}: {e}")
+        return
+
     if message.author.bot:
         return
     if message.channel.name.startswith("🏷️・sell-"):
