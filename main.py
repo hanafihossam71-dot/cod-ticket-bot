@@ -1231,13 +1231,63 @@ async def seller_ticket_autoclose_task():
 def build_welcome_embed(member: discord.Member, guild: discord.Guild, *, with_gif: bool = True) -> discord.Embed:
     """Minimal animated welcome card shown when a real member joins the server."""
     embed = discord.Embed(
-        title=f"Hello {member.display_name}!",
+        description=f"Hello {member.display_name}!\nWelcome to **_PEDRAO22K_**",
         color=0xF5C451,
     )
     embed.set_thumbnail(url=member.display_avatar.url)
     if with_gif:
         embed.set_image(url="attachment://welcome_pedrao22k.gif")
     return embed
+
+
+BOT_NICKNAME_ANIMATION_FRAMES = [
+    "✦Pedrao22k",
+    "P✦edrao22k",
+    "Pe✦drao22k",
+    "Ped✦rao22k",
+    "Pedr✦ao22k",
+    "Pedra✦o22k",
+    "Pedrao✦22k",
+    "Pedrao2✦2k",
+    "Pedrao22✦k",
+    "Pedrao22k✦",
+]
+BOT_NICKNAME_ANIMATION_INTERVAL_SECONDS = 20
+
+
+async def animated_bot_nickname_task():
+    """Animate the bot's server nickname conservatively without affecting its application identity."""
+    await bot.wait_until_ready()
+
+    category = bot.get_channel(TICKET_CATEGORY_ID)
+    guild = category.guild if isinstance(category, discord.CategoryChannel) else (bot.guilds[0] if bot.guilds else None)
+    if guild is None:
+        print("Animated nickname disabled: no guild is available.")
+        return
+
+    me = guild.me or guild.get_member(bot.user.id if bot.user else 0)
+    if me is None:
+        print("Animated nickname disabled: bot member could not be resolved.")
+        return
+
+    frame_index = 0
+    last_applied = None
+    while not bot.is_closed():
+        frame = BOT_NICKNAME_ANIMATION_FRAMES[frame_index % len(BOT_NICKNAME_ANIMATION_FRAMES)]
+        frame_index += 1
+        try:
+            if frame != last_applied and me.display_name != frame:
+                await me.edit(nick=frame, reason="Pedrao22k animated bot nickname")
+                last_applied = frame
+        except discord.Forbidden:
+            print("Animated nickname disabled: missing permission to change the bot nickname.")
+            return
+        except discord.HTTPException as e:
+            print(f"Animated nickname update failed: {e}")
+        except Exception as e:
+            print(f"Animated nickname unexpected error: {e}")
+
+        await asyncio.sleep(BOT_NICKNAME_ANIMATION_INTERVAL_SECONDS)
 
 
 @bot.event
@@ -2765,6 +2815,7 @@ async def on_ready():
         bot.loop.create_task(start_web_server())
         bot.loop.create_task(session_cleaner_task())
         bot.loop.create_task(seller_ticket_autoclose_task())
+        bot.loop.create_task(animated_bot_nickname_task())
         background_tasks_started = True
     try:
         await ensure_shop_entry_message()
