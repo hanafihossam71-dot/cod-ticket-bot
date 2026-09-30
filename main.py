@@ -36,7 +36,7 @@ DISCORD_CLIENT_SECRET = os.environ.get("DISCORD_CLIENT_SECRET", "")
 DEFAULT_SHOP_ENTRY_CHANNEL_ID = 1554581284112826429
 SHOP_ENTRY_CHANNEL_ID = int(os.environ.get("SHOP_ENTRY_CHANNEL_ID", str(DEFAULT_SHOP_ENTRY_CHANNEL_ID)) or DEFAULT_SHOP_ENTRY_CHANNEL_ID)
 
-SELLER_TICKET_CLOSE_DELAY_SECONDS = 60
+SELLER_TICKET_CLOSE_DELAY_SECONDS = 24 * 60 * 60
 SELLER_PORTAL_ACTIVE_GRACE_SECONDS = 3600
 SELLER_TICKET_SCAN_INTERVAL_SECONDS = 15
 
@@ -336,66 +336,63 @@ def build_seller_status_embed(
     reason: str | None = None,
     avatar_url: str | None = None,
 ) -> discord.Embed:
-    """Build the single canonical seller-facing status card for one listing."""
+    """Build the single compact canonical seller-facing status card for one listing.
+
+    V5.63 intentionally keeps the Discord card minimal. Full listing details remain
+    stored in Supabase / Seller Portal; only the information needed to identify and
+    follow the listing status is shown in the seller ticket.
+    """
     status = str(status or "").upper()
+
     if status == "PUBLISHED":
         title = f"✅ {offer_id} — APPROVED & PUBLISHED"
-        intro = f"Great news {seller_mention}! Your Call of Duty account listing has been approved and is now live in the Accounts Shop."
-        current_status = "Published / Live"
         color = 0x10B981
-        footer = "Pedrao22k Services • Listing Live"
-        extra = "\n\n🛒 **OPEN ACCOUNTS SHOP:** Use the button below to view the live offer inside Discord."
+        description = (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "📋 **SUBMISSION OVERVIEW:**\n"
+            f"🆔 **Offer:** `{offer_id}`\n"
+            f"🏷️ **Offer Title:** `{offer_title}`\n"
+            f"💰 **Asking Price:** `{price_str}`"
+        )
     elif status == "REJECTED":
         title = f"❌ {offer_id} — LISTING DECLINED BY STAFF"
-        intro = f"Hello {seller_mention}, your submitted Call of Duty account listing has been inspected and **declined** by moderation."
-        current_status = "Rejected / Action Required"
         color = 0xEF4444
-        footer = "Pedrao22k Services • Moderation Decision"
-        extra = (
-            "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "### 📝 REASON FOR REJECTION:\n"
-            f"> ⚠️ **`{reason or 'No reason provided.'}`**\n\n"
+        description = (
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "🛠️ **WHAT YOU CAN DO:**\n"
-            "• Please re-read our safety rules (strictly no gamer tags, nicknames, or watermarks).\n"
-            "• The **Seller Portal** remains available in this ticket so you can submit a corrected offer."
+            f"🆔 **Offer:** `{offer_id}`\n"
+            f"🏷️ **Offer Title:** `{offer_title}`\n"
+            f"💰 **Asking Price:** `{price_str}`\n"
+            "❌ **Current Status:** `Rejected / Action Required`\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚠️ **Reason for Rejection:** `{reason or 'No reason provided.'}`"
         )
     elif status == "SOLD":
         title = f"⛔ {offer_id} — SOLD / NO LONGER AVAILABLE"
-        intro = f"{seller_mention}, this Call of Duty account listing has been marked as **sold** and is no longer available in the Accounts Shop."
-        current_status = "Sold / No Longer Available"
         color = 0x6B7280
-        footer = "Pedrao22k Services • Listing Sold"
-        extra = ""
+        description = (
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🆔 **Offer:** `{offer_id}`\n"
+            f"🏷️ **Offer Title:** `{offer_title}`\n"
+            f"💰 **Asking Price:** `{price_str}`\n"
+            "⛔ **Current Status:** `Sold / No Longer Available`"
+        )
     else:
         title = f"🚀 {offer_id} — OFFER SUBMITTED TO STAFF"
-        intro = f"Thank you {seller_mention}! Your Call of Duty account listing has been securely recorded."
-        current_status = "Pending Admin Verification"
         color = 0xF59E0B
-        footer = "Pedrao22k Services • Awaiting Review"
-        extra = ""
-
-    embed = discord.Embed(
-        title=title,
-        description=(
-            f"{intro}\n\n"
+        description = (
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "### 📋 SUBMISSION OVERVIEW:\n"
-            f"> 🆔 **Offer:** `{offer_id}`\n"
-            f"> 🏷️ **Offer Title:** `{offer_title}`\n"
-            f"> 💰 **Asking Price:** `{price_str}`\n"
-            f"> 🌟 **Highlights:** `{highlights or 'None'}`\n"
-            f"> 📸 **Screenshots Verified:** `{screenshots}`\n"
-            f"> {'✅' if status == 'PUBLISHED' else '❌' if status == 'REJECTED' else '⛔' if status == 'SOLD' else '⏳'} **Current Status:** `{current_status}`"
-            f"{extra}"
-        ),
+            f"🆔 **Offer:** `{offer_id}`\n"
+            f"🏷️ **Offer Title:** `{offer_title}`\n"
+            f"💰 **Asking Price:** `{price_str}`\n"
+            "⏳ **Current Status:** `Pending Admin Verification`"
+        )
+
+    return discord.Embed(
+        title=title,
+        description=description,
         color=color,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
-    if avatar_url:
-        embed.set_thumbnail(url=avatar_url)
-    embed.set_footer(text=footer)
-    return embed
 
 
 async def persist_seller_status_message_id(listing_id: str, message_id: int):
@@ -513,11 +510,13 @@ def seller_listing_topic(listing_id: str, offer_number: int, seller_id: int) -> 
     return f"pedrao22k_seller_listing;listing_id={listing_id};offer_number={offer_number};seller_id={seller_id}"
 
 
+SELLER_TICKET_CLOSE_POLICY = "24h_v1"
+
 def seller_ticket_topic(seller_id: int, *, close_at: int = 0, hold_open: bool = False) -> str:
     """Persistent seller-room state. Kept in the Discord topic so restarts do not lose auto-close state."""
     return (
         f"pedrao22k_seller_ticket;seller_id={int(seller_id)};"
-        f"close_at={int(close_at or 0)};hold={1 if hold_open else 0}"
+        f"close_at={int(close_at or 0)};hold={1 if hold_open else 0};policy={SELLER_TICKET_CLOSE_POLICY}"
     )
 
 def parse_seller_ticket_topic(topic: Optional[str]) -> Optional[dict]:
@@ -528,6 +527,7 @@ def parse_seller_ticket_topic(topic: Optional[str]) -> Optional[dict]:
         result["seller_id"] = int(result["seller_id"])
         result["close_at"] = int(result.get("close_at") or 0)
         result["hold_open"] = str(result.get("hold", "0")) == "1"
+        result["policy"] = str(result.get("policy", ""))
     except (TypeError, ValueError):
         return None
     return result
@@ -1034,8 +1034,6 @@ async def mark_seller_ticket_submission_active(channel: discord.TextChannel, sel
 
 async def schedule_seller_ticket_close_if_idle(channel: discord.TextChannel, seller_id: int) -> bool:
     meta = parse_seller_ticket_topic(channel.topic)
-    if meta and meta.get("hold_open"):
-        return False
     if await seller_ticket_has_pending(channel.id):
         if meta and meta.get("close_at"):
             await set_seller_ticket_state(channel, seller_id, close_at=0, hold_open=False, reason="Pending listing keeps seller ticket open")
@@ -1049,8 +1047,8 @@ async def schedule_seller_ticket_close_if_idle(channel: discord.TextChannel, sel
     )
     try:
         await channel.send(
-            "✅ **All current submissions have finished review.** This seller ticket will close automatically in **1 minute**. "
-            "Open the **Seller Portal** before then if you want to submit another account."
+            "✅ **All current submissions have finished review.** This seller ticket will remain open for **24 hours**. "
+            "Submitting another account during this period will cancel the scheduled close; a new 24-hour window begins after all submissions are resolved again."
         )
     except Exception:
         pass
@@ -1170,6 +1168,29 @@ async def refresh_seller_portal_launchers():
                 continue
             try:
                 seller_id = int(meta["seller_id"])
+                # V5.64 migration: old seller rooms may still carry a 60-second
+                # deadline or the legacy rejection hold. Move them once to the
+                # 24-hour policy so deploying this version cannot unexpectedly
+                # close an existing seller room.
+                if meta.get("policy") != SELLER_TICKET_CLOSE_POLICY:
+                    if await seller_ticket_has_pending(channel.id):
+                        await set_seller_ticket_state(
+                            channel, seller_id, close_at=0, hold_open=False,
+                            reason="Migrate seller room to 24-hour policy while review is pending",
+                        )
+                    elif await seller_ticket_has_any_listing(channel.id):
+                        await set_seller_ticket_state(
+                            channel, seller_id,
+                            close_at=int(time.time()) + SELLER_TICKET_CLOSE_DELAY_SECONDS,
+                            hold_open=False,
+                            reason="Migrate resolved seller room to 24-hour close policy",
+                        )
+                    else:
+                        await set_seller_ticket_state(
+                            channel, seller_id, close_at=0, hold_open=False,
+                            reason="Migrate empty seller room to 24-hour policy",
+                        )
+                    meta = parse_seller_ticket_topic(channel.topic)
                 await ensure_seller_portal_launcher(channel, seller_id)
                 # Recover the rare case where Railway restarted after the last
                 # review finished but before the 60-second deadline was stored.
@@ -1202,7 +1223,7 @@ async def seller_ticket_autoclose_task():
                         reason="Automatic seller ticket close started",
                     )
                     await archive_and_delete_ticket(
-                        channel, bot.user, reason="Seller listings completed; automatic close after 1 minute", delay=0
+                        channel, bot.user, reason="Seller listings completed; automatic close after 24 hours", delay=0
                     )
                 except Exception as e:
                     print(f"Seller ticket auto-close error for {channel.id}: {e}")
@@ -1444,9 +1465,9 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
                 print(f"Error editing seller status card to rejected: {e}")
 
         try:
-            await mark_seller_ticket_rejection_hold(self.ticket_channel, int(self.seller.id))
+            await schedule_seller_ticket_close_if_idle(self.ticket_channel, int(self.seller.id))
         except Exception as e:
-            print(f"Seller ticket rejection hold error: {e}")
+            print(f"Seller ticket close scheduling after rejection error: {e}")
         # No second seller message here. The canonical red status card already
         # contains the decision, reason, and recovery instructions.
 
@@ -2407,11 +2428,13 @@ async def handle_web_page(request):
                 try:
                     # Seller actively opened the form. Give them enough time to
                     # finish it instead of deleting the ticket mid-submission.
+                    existing_close_at = int(meta.get("close_at") or 0)
+                    grace_close_at = int(time.time()) + SELLER_PORTAL_ACTIVE_GRACE_SECONDS
                     await set_seller_ticket_state(
                         channel, int(meta["seller_id"]),
-                        close_at=int(time.time()) + SELLER_PORTAL_ACTIVE_GRACE_SECONDS,
+                        close_at=max(existing_close_at, grace_close_at),
                         hold_open=False,
-                        reason="Seller Portal opened; postpone automatic close",
+                        reason="Seller Portal opened; preserve or extend automatic close grace",
                     )
                 except Exception as e:
                     print(f"Seller portal open grace error: {e}")
