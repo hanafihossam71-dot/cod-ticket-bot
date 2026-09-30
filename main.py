@@ -308,6 +308,202 @@ def format_listing_price(listing: dict) -> str:
         amount = str(listing.get("price", ""))
     return f"{symbol}{amount} {currency}".strip()
 
+def _format_status_highlights(categories) -> str:
+    if not categories:
+        return "None"
+    if isinstance(categories, str):
+        raw = [categories]
+    else:
+        raw = list(categories)
+    labels = {
+        "TOP_250": "Top 250",
+        "NUKES": "Nukes",
+        "IRIDESCENT": "Iridescent",
+    }
+    values = [labels.get(str(item).upper(), str(item).replace("_", " ").title()) for item in raw if str(item).strip()]
+    return " • ".join(values) if values else "None"
+
+
+def build_seller_status_embed(
+    *,
+    status: str,
+    seller_mention: str,
+    offer_id: str,
+    offer_title: str,
+    price_str: str,
+    highlights: str,
+    screenshots: str,
+    reason: str | None = None,
+    avatar_url: str | None = None,
+) -> discord.Embed:
+    """Build the single canonical seller-facing status card for one listing."""
+    status = str(status or "").upper()
+    if status == "PUBLISHED":
+        title = f"✅ {offer_id} — APPROVED & PUBLISHED"
+        intro = f"Great news {seller_mention}! Your Call of Duty account listing has been approved and is now live in the Accounts Shop."
+        current_status = "Published / Live"
+        color = 0x10B981
+        footer = "Pedrao22k Services • Listing Live"
+        extra = "\n\n🛒 **OPEN ACCOUNTS SHOP:** Use the button below to view the live offer inside Discord."
+    elif status == "REJECTED":
+        title = f"❌ {offer_id} — LISTING DECLINED BY STAFF"
+        intro = f"Hello {seller_mention}, your submitted Call of Duty account listing has been inspected and **declined** by moderation."
+        current_status = "Rejected / Action Required"
+        color = 0xEF4444
+        footer = "Pedrao22k Services • Moderation Decision"
+        extra = (
+            "\n\n━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "### 📝 REASON FOR REJECTION:\n"
+            f"> ⚠️ **`{reason or 'No reason provided.'}`**\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🛠️ **WHAT YOU CAN DO:**\n"
+            "• Please re-read our safety rules (strictly no gamer tags, nicknames, or watermarks).\n"
+            "• The **Seller Portal** remains available in this ticket so you can submit a corrected offer."
+        )
+    elif status == "SOLD":
+        title = f"⛔ {offer_id} — SOLD / NO LONGER AVAILABLE"
+        intro = f"{seller_mention}, this Call of Duty account listing has been marked as **sold** and is no longer available in the Accounts Shop."
+        current_status = "Sold / No Longer Available"
+        color = 0x6B7280
+        footer = "Pedrao22k Services • Listing Sold"
+        extra = ""
+    else:
+        title = f"🚀 {offer_id} — OFFER SUBMITTED TO STAFF"
+        intro = f"Thank you {seller_mention}! Your Call of Duty account listing has been securely recorded."
+        current_status = "Pending Admin Verification"
+        color = 0xF59E0B
+        footer = "Pedrao22k Services • Awaiting Review"
+        extra = ""
+
+    embed = discord.Embed(
+        title=title,
+        description=(
+            f"{intro}\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "### 📋 SUBMISSION OVERVIEW:\n"
+            f"> 🆔 **Offer:** `{offer_id}`\n"
+            f"> 🏷️ **Offer Title:** `{offer_title}`\n"
+            f"> 💰 **Asking Price:** `{price_str}`\n"
+            f"> 🌟 **Highlights:** `{highlights or 'None'}`\n"
+            f"> 📸 **Screenshots Verified:** `{screenshots}`\n"
+            f"> {'✅' if status == 'PUBLISHED' else '❌' if status == 'REJECTED' else '⛔' if status == 'SOLD' else '⏳'} **Current Status:** `{current_status}`"
+            f"{extra}"
+        ),
+        color=color,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+    embed.set_footer(text=footer)
+    return embed
+
+
+async def persist_seller_status_message_id(listing_id: str, message_id: int):
+    """Best-effort persistence used so /sold can edit the same seller card later."""
+    if not listing_id or not message_id:
+        return
+    try:
+        await supabase_request(
+            "PATCH",
+            f"/rest/v1/listings?id=eq.{listing_id}",
+            json_data={"seller_status_message_id": int(message_id)},
+        )
+    except Exception as e:
+        # Keep listing workflows working even if an older database has not received the V5.62 column yet.
+        print(f"Seller status message persistence warning for {listing_id}: {e}")
+
+
+async def fetch_listing_status_context(offer_number: int):
+    """Fetch data needed to update the seller status card; gracefully supports pre-V5.62 schema."""
+    select_new = "id,offer_number,title,price,currency,status,seller_discord_id,seller_ticket_channel_id,seller_status_message_id,categories"
+    try:
+        rows = await supabase_request(
+            "GET",
+            f"/rest/v1/listings?offer_number=eq.{int(offer_number)}&select={select_new}&limit=1",
+        )
+    except Exception as e:
+        print(f"V5.62 listing context fallback for {offer_number}: {e}")
+        rows = await supabase_request(
+            "GET",
+            f"/rest/v1/listings?offer_number=eq.{int(offer_number)}&select=id,offer_number,title,price,currency,status,seller_discord_id,seller_ticket_channel_id,categories&limit=1",
+        )
+    return rows[0] if isinstance(rows, list) and rows else None
+
+
+async def fetch_listing_image_count(listing_id: str) -> int:
+    try:
+        rows = await supabase_request(
+            "GET",
+            f"/rest/v1/listing_images?listing_id=eq.{listing_id}&select=id",
+        )
+        return len(rows) if isinstance(rows, list) else 0
+    except Exception as e:
+        print(f"Listing image count warning for {listing_id}: {e}")
+        return 0
+
+
+async def locate_seller_status_message(guild: discord.Guild | None, listing: dict) -> discord.Message | None:
+    """Resolve the canonical seller card by persisted ID, with a safe legacy scan fallback."""
+    if not guild or not listing:
+        return None
+    channel_id = listing.get("seller_ticket_channel_id")
+    if not channel_id:
+        return None
+    channel = guild.get_channel(int(channel_id))
+    if not isinstance(channel, discord.TextChannel):
+        return None
+
+    message_id = listing.get("seller_status_message_id")
+    if message_id:
+        try:
+            return await channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            pass
+
+    # Legacy fallback for listings created before V5.62. Only touch bot-authored
+    # messages whose embed title contains the exact offer ID.
+    offer_id = format_offer_id(int(listing.get("offer_number") or 0))
+    try:
+        async for msg in channel.history(limit=100):
+            if msg.author.id != guild.me.id or not msg.embeds:
+                continue
+            title = msg.embeds[0].title or ""
+            if offer_id in title and any(marker in title for marker in ("OFFER SUBMITTED", "APPROVED", "DECLINED", "SOLD")):
+                await persist_seller_status_message_id(str(listing["id"]), msg.id)
+                return msg
+    except Exception as e:
+        print(f"Legacy seller status message scan warning for {offer_id}: {e}")
+    return None
+
+
+async def update_seller_status_card_for_sold(guild: discord.Guild | None, offer_number: int):
+    """Best-effort SOLD transition for the seller's canonical listing card."""
+    try:
+        listing = await fetch_listing_status_context(offer_number)
+        if not listing:
+            return
+        message = await locate_seller_status_message(guild, listing)
+        if not message:
+            return
+        seller_id = listing.get("seller_discord_id")
+        seller_mention = f"<@{seller_id}>" if seller_id else "Seller"
+        count = await fetch_listing_image_count(str(listing["id"]))
+        screenshots = f"{count} proofs uploaded" if count else "Uploaded proofs"
+        embed = build_seller_status_embed(
+            status="SOLD",
+            seller_mention=seller_mention,
+            offer_id=format_offer_id(int(listing["offer_number"])),
+            offer_title=str(listing.get("title") or "Untitled Offer"),
+            price_str=format_listing_price(listing),
+            highlights=_format_status_highlights(listing.get("categories")),
+            screenshots=screenshots,
+        )
+        await message.edit(embed=embed, view=None)
+    except Exception as e:
+        # SOLD must never fail just because the historical seller card cannot be edited.
+        print(f"Seller SOLD status card update warning for {offer_number}: {e}")
+
+
 def purchase_ticket_topic(listing_id: str, offer_number: int, buyer_id: int) -> str:
     return f"pedrao22k_purchase;listing_id={listing_id};offer_number={offer_number};buyer_id={buyer_id}"
 
@@ -1186,13 +1382,14 @@ class TicketLauncherView(View):
         self.add_item(TicketSelect())
 
 class RejectReasonModal(Modal, title="Listing Rejection Reason"):
-    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", count_str: str = "", listing_id: str = "", review_message: discord.Message = None, approval_view: View = None):
+    def __init__(self, seller: discord.User, ticket_channel: discord.TextChannel, launcher_msg: discord.Message = None, offer_title: str = "", price_str: str = "", items_list: str = "None", count_str: str = "", listing_id: str = "", review_message: discord.Message = None, approval_view: View = None):
         super().__init__()
         self.seller = seller
         self.ticket_channel = ticket_channel
         self.launcher_msg = launcher_msg
         self.offer_title = offer_title
         self.price_str = price_str
+        self.items_list = items_list
         self.count_str = count_str
         self.listing_id = listing_id
         self.review_message = review_message
@@ -1226,42 +1423,32 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
 
         if self.launcher_msg:
             try:
-                rejected_embed = discord.Embed(
-                    title="❌ LISTING SUBMISSION DECLINED BY STAFF",
-                    description=(
-                        f"Hello {self.seller.mention}, your submitted Call of Duty account listing has been inspected and **declined** by moderation.\n\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        "### 📋 SUBMISSION DETAILS:\n"
-                        f"> 🏷️ **Offer Title:** `{self.offer_title}`\n"
-                        f"> 💰 **Asking Price:** `{self.price_str}`\n"
-                        f"> 📸 **Screenshots:** `{self.count_str}`\n"
-                        "> ❌ **Current Status:** `Rejected / Action Required`\n\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        "### 📝 REASON FOR REJECTION:\n"
-                        f"> ⚠️ **`{reason}`**\n\n"
-                        "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                        "🛠️ **WHAT YOU CAN DO:**\n"
-                        "• Please re-read our safety rules (strictly no gamer tags, nicknames, or watermarks).\n"
-                        "• The **Seller Portal** remains available in this ticket so you can submit a corrected offer."
-                    ),
-                    color=0xEF4444,
-                    timestamp=datetime.datetime.utcnow()
+                offer_number = None
+                current_listing = await fetch_listing_by_id(self.listing_id)
+                if current_listing and current_listing.get("offer_number") is not None:
+                    offer_number = int(current_listing["offer_number"])
+                rejected_embed = build_seller_status_embed(
+                    status="REJECTED",
+                    seller_mention=self.seller.mention,
+                    offer_id=(format_offer_id(offer_number) if offer_number is not None else "Offer"),
+                    offer_title=self.offer_title,
+                    price_str=self.price_str,
+                    highlights=self.items_list,
+                    screenshots=self.count_str,
+                    reason=reason,
+                    avatar_url=(self.seller.display_avatar.url if self.seller.display_avatar else None),
                 )
-                if self.seller.display_avatar:
-                    rejected_embed.set_thumbnail(url=self.seller.display_avatar.url)
-                rejected_embed.set_footer(text="Pedrao22k Services • Moderation Decision")
                 await self.launcher_msg.edit(embed=rejected_embed, view=None)
+                await persist_seller_status_message_id(self.listing_id, self.launcher_msg.id)
             except Exception as e:
-                print(f"Error editing launcher to rejected: {e}")
+                print(f"Error editing seller status card to rejected: {e}")
 
         try:
             await mark_seller_ticket_rejection_hold(self.ticket_channel, int(self.seller.id))
         except Exception as e:
             print(f"Seller ticket rejection hold error: {e}")
-        try:
-            await self.ticket_channel.send(f"⚠️ {self.seller.mention} **Your listing was declined.** Reason: `{reason}`")
-        except:
-            pass
+        # No second seller message here. The canonical red status card already
+        # contains the decision, reason, and recovery instructions.
 
 class MarketplaceCarouselView(View):
     def __init__(self, images: list, embed_data: discord.Embed, is_sold: bool = False):
@@ -1429,25 +1616,25 @@ class AdminApprovalView(View):
             )
             if self.launcher_msg:
                 try:
-                    approved_embed = discord.Embed(
-                        title="🎉 LISTING APPROVED & PUBLISHED ON ACCOUNTS SHOP",
-                        description=(
-                            f"Great news {self.seller.mention}! Your account listing has been approved and is now visible in our Accounts Shop.\n\n"
-                            f"🛒 **Offer:** `{format_offer_id(offer_number)}`\n"
-                            "Use the button below to open the Accounts Shop inside Discord."
-                        ),
-                        color=0x10B981,
-                        timestamp=datetime.datetime.utcnow()
+                    approved_embed = build_seller_status_embed(
+                        status="PUBLISHED",
+                        seller_mention=self.seller.mention,
+                        offer_id=format_offer_id(offer_number),
+                        offer_title=self.offer_title,
+                        price_str=f"{self.price_num} {self.currency}",
+                        highlights=self.items_list,
+                        screenshots=self.count_str,
+                        avatar_url=(self.seller.display_avatar.url if self.seller.display_avatar else None),
                     )
-                    if self.seller.display_avatar:
-                        approved_embed.set_thumbnail(url=self.seller.display_avatar.url)
-                    approved_embed.set_footer(text="Pedrao22k Services • Listing Live")
                     await self.launcher_msg.edit(embed=approved_embed, view=ShopLaunchView())
+                    await persist_seller_status_message_id(self.listing_id, self.launcher_msg.id)
                 except Exception as e:
-                    print(f"Error editing launcher to approved: {e}")
+                    print(f"Error editing seller status card to approved: {e}")
+            # Editing a Discord message does not create a new notification. Keep one
+            # concise seller ping for approval, without repeating the full listing data.
             try:
                 await self.ticket_channel.send(
-                    f"🎉 {self.seller.mention} **{format_offer_id(offer_number)} has been approved and is now live in the Accounts Shop.**"
+                    f"✅ {self.seller.mention} **{format_offer_id(offer_number)} approved and published in the Accounts Shop.**"
                 )
             except Exception:
                 pass
@@ -1469,6 +1656,7 @@ class AdminApprovalView(View):
             launcher_msg=self.launcher_msg,
             offer_title=self.offer_title,
             price_str=f"{self.price_num} {self.currency}",
+            items_list=self.items_list,
             count_str=self.count_str,
             listing_id=self.listing_id,
             review_message=interaction.message,
@@ -1502,6 +1690,7 @@ class SoldConfirmationView(View):
             if current.get("status") == "SOLD":
                 return await interaction.followup.send(f"⚠️ Account {format_offer_id(offer_number)} is already marked as sold.", ephemeral=True)
             await set_listing_status(listing_id, "SOLD")
+            await update_seller_status_card_for_sold(interaction.guild, offer_number)
         except Exception as e:
             return await interaction.followup.send(f"❌ Could not mark {format_offer_id(offer_number)} as sold: `{e}`", ephemeral=True)
 
@@ -2376,25 +2565,16 @@ async def _handle_finalize_listing(request, data):
             except OSError:
                 pass
 
-        submitted_embed = discord.Embed(
-            title=f"🚀 {submitted_offer_id} — OFFER SUBMITTED TO STAFF",
-            description=(
-                f"Thank you {seller.mention}! Your Call of Duty account listing has been securely recorded.\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "### 📋 SUBMISSION OVERVIEW:\n"
-                f"> 🆔 **Offer:** `{submitted_offer_id}`\n"
-                f"> 🏷️ **Offer Title:** `{offer_title}`\n"
-                f"> 💰 **Asking Price:** `{clean_price_num} {currency}`\n"
-                f"> 🌟 **Highlights:** `{items_list}`\n"
-                f"> 📸 **Screenshots Verified:** `{len(discord_cdn_urls)} proofs uploaded`\n"
-                "> ⏳ **Current Status:** `Pending Admin Verification`"
-            ),
-            color=0xF59E0B,
-            timestamp=datetime.datetime.utcnow()
+        submitted_embed = build_seller_status_embed(
+            status="PENDING_REVIEW",
+            seller_mention=seller.mention,
+            offer_id=submitted_offer_id,
+            offer_title=offer_title,
+            price_str=f"{clean_price_num} {currency}",
+            highlights=items_list,
+            screenshots=f"{len(discord_cdn_urls)} proofs uploaded",
+            avatar_url=(seller.display_avatar.url if seller.display_avatar else None),
         )
-        if seller.display_avatar:
-            submitted_embed.set_thumbnail(url=seller.display_avatar.url)
-        submitted_embed.set_footer(text="Pedrao22k Services • Awaiting Review")
 
         admin_embed = discord.Embed(
             title=f"📥 {submitted_offer_id} — {offer_title}",
@@ -2412,6 +2592,7 @@ async def _handle_finalize_listing(request, data):
         # Every listing gets its own status message. The portal launcher stays
         # untouched so the seller can submit another account with one click.
         submission_msg = await ticket_channel.send(embed=submitted_embed)
+        await persist_seller_status_message_id(listing_id, submission_msg.id)
 
         if not session_info.get("review_dispatched"):
             role_ping = support_role.mention if support_role else "@here"
