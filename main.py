@@ -96,7 +96,7 @@ async def supabase_request(method: str, endpoint: str, *, json_data=None, body=N
             except Exception:
                 return text_body
 
-async def create_supabase_listing(listing_id: str, seller_id: int, title: str, price: float, currency: str, category: str | None, description: str, image_paths: list):
+async def create_supabase_listing(listing_id: str, seller_id: int, title: str, price: float, currency: str, category: str | None, categories: list[str], description: str, image_paths: list):
     """Create one pending listing and its images; compensate on partial failure."""
     uploaded_objects = []
     try:
@@ -108,7 +108,10 @@ async def create_supabase_listing(listing_id: str, seller_id: int, title: str, p
                 "title": title,
                 "price": price,
                 "currency": currency,
+                # Keep the legacy primary category for backwards compatibility,
+                # but persist every selected Seller Portal highlight as well.
                 "category": category,
+                "categories": categories,
                 "description": description,
                 "status": "PENDING_REVIEW",
                 "sort_order": 0,
@@ -1774,26 +1777,25 @@ async def _handle_finalize_listing(request, data):
         items_list = data.get("items", "None")
         description = data.get("description", "")
 
-        # The Seller Portal no longer asks the seller for a separate primary
-        # category. Keep the existing Shop filters working by deriving the
-        # single database category from the account highlights instead.
-        #
-        # Priority is deterministic when more than one highlight is selected:
-        # Top 250 -> Nukes -> Iridescent. If none are selected, the listing is
-        # stored with a null category and remains visible under "All".
+        # Persist every Seller Portal highlight. The legacy `category` field
+        # remains populated with the first supported highlight so older Shop
+        # builds and existing integrations keep working during rollout.
         selected_highlights = {
             item.strip().lower()
             for item in str(items_list).split("•")
             if item.strip() and item.strip().lower() != "none"
         }
-        if "top 250" in selected_highlights:
-            category = "TOP_250"
-        elif "nukes" in selected_highlights:
-            category = "NUKES"
-        elif "iridescent" in selected_highlights:
-            category = "IRIDESCENT"
-        else:
-            category = None
+        highlight_category_map = (
+            ("top 250", "TOP_250"),
+            ("nukes", "NUKES"),
+            ("iridescent", "IRIDESCENT"),
+        )
+        categories = [
+            category_code
+            for highlight_label, category_code in highlight_category_map
+            if highlight_label in selected_highlights
+        ]
+        category = categories[0] if categories else None
 
         if not session_id or session_id not in active_web_sessions:
             return web.json_response({"status": "error", "error": "Session expired."}, status=400)
@@ -1844,7 +1846,7 @@ async def _handle_finalize_listing(request, data):
         listing_id = session_info.get("listing_id") or str(uuid.uuid5(uuid.NAMESPACE_URL, f"pedrao22k-listing:{session_id}"))
         if not session_info.get("listing_id"):
             try:
-                await create_supabase_listing(listing_id, seller_id, offer_title, price_value, currency, category, description, all_paths)
+                await create_supabase_listing(listing_id, seller_id, offer_title, price_value, currency, category, categories, description, all_paths)
                 session_info["listing_id"] = listing_id
             except Exception as e:
                 print(f"Supabase listing creation error: {e}")
