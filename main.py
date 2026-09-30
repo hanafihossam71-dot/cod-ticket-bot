@@ -76,7 +76,7 @@ async def supabase_request(method: str, endpoint: str, *, json_data=None, body=N
             except Exception:
                 return text_body
 
-async def create_supabase_listing(listing_id: str, seller_id: int, title: str, price: float, currency: str, category: str, description: str, image_paths: list):
+async def create_supabase_listing(listing_id: str, seller_id: int, title: str, price: float, currency: str, category: str | None, description: str, image_paths: list):
     """Create one pending listing and its images; compensate on partial failure."""
     uploaded_objects = []
     try:
@@ -1388,14 +1388,6 @@ HTML_PAGE = """<!DOCTYPE html>
                 </select>
             </div>
 
-            <label for="category">Primary Shop Category</label>
-            <select id="category" required>
-                <option value="" disabled selected>Select a category</option>
-                <option value="TOP_250">Top 250</option>
-                <option value="NUKES">Nukes</option>
-                <option value="IRIDESCENT">Iridescent</option>
-            </select>
-
             <!-- Optional account highlights -->
             <div class="checkbox-container">
                 <div class="checkbox-title">
@@ -1565,7 +1557,6 @@ HTML_PAGE = """<!DOCTYPE html>
             const offerTitle = document.getElementById('offerTitle').value.trim();
             const price = document.getElementById('price').value.trim();
             const currency = document.getElementById('currency').value;
-            const category = document.getElementById('category').value;
             const desc = document.getElementById('desc').value.trim();
 
             const selectedItems = [];
@@ -1574,7 +1565,7 @@ HTML_PAGE = """<!DOCTYPE html>
             });
             const itemsString = selectedItems.length > 0 ? selectedItems.join(' • ') : 'None';
 
-            if (!offerTitle || !price || !category || !desc || !coverFile || secondaryFiles.length === 0) {
+            if (!offerTitle || !price || !desc || !coverFile || secondaryFiles.length === 0) {
                 alert("Please fill in all fields, upload primary cover, and at least one gallery image.");
                 return;
             }
@@ -1598,7 +1589,6 @@ HTML_PAGE = """<!DOCTYPE html>
             formData.append("offerTitle", offerTitle);
             formData.append("price", price);
             formData.append("currency", currency);
-            formData.append("category", category);
             formData.append("items", itemsString);
             formData.append("description", desc);
 
@@ -1678,16 +1668,34 @@ async def _handle_finalize_listing(request, data):
         offer_title = data.get("offerTitle", "Verified COD Account")
         price = data.get("price", "")
         currency = data.get("currency", "USD")
-        category = data.get("category", "")
         items_list = data.get("items", "None")
         description = data.get("description", "")
+
+        # The Seller Portal no longer asks the seller for a separate primary
+        # category. Keep the existing Shop filters working by deriving the
+        # single database category from the account highlights instead.
+        #
+        # Priority is deterministic when more than one highlight is selected:
+        # Top 250 -> Nukes -> Iridescent. If none are selected, the listing is
+        # stored with a null category and remains visible under "All".
+        selected_highlights = {
+            item.strip().lower()
+            for item in str(items_list).split("•")
+            if item.strip() and item.strip().lower() != "none"
+        }
+        if "top 250" in selected_highlights:
+            category = "TOP_250"
+        elif "nukes" in selected_highlights:
+            category = "NUKES"
+        elif "iridescent" in selected_highlights:
+            category = "IRIDESCENT"
+        else:
+            category = None
 
         if not session_id or session_id not in active_web_sessions:
             return web.json_response({"status": "error", "error": "Session expired."}, status=400)
         if currency not in ("USD", "EUR"):
             return web.json_response({"status": "error", "error": "Please select USD or EUR."}, status=400)
-        if category not in ("TOP_250", "NUKES", "IRIDESCENT"):
-            return web.json_response({"status": "error", "error": "Please select a valid Shop category."}, status=400)
         try:
             price_value = float(price)
             if price_value <= 0:
@@ -1779,7 +1787,7 @@ async def _handle_finalize_listing(request, data):
             timestamp=datetime.datetime.utcnow()
         )
         admin_embed.add_field(name="💰 Asking Price", value=f"{clean_price_num} {currency}", inline=False)
-        admin_embed.add_field(name="🗂️ Shop Category", value=category.replace("_", " "), inline=True)
+        admin_embed.add_field(name="🗂️ Shop Category", value=(category.replace("_", " ") if category else "All / Uncategorized"), inline=True)
         admin_embed.add_field(name="🌟 Account Highlights", value=f"{items_list}", inline=False)
         admin_embed.add_field(name="📋 Account Details", value=description[:1024], inline=False)
         if discord_cdn_urls:
