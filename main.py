@@ -1228,37 +1228,47 @@ async def seller_ticket_autoclose_task():
                 except Exception as e:
                     print(f"Seller ticket auto-close error for {channel.id}: {e}")
 
-def build_welcome_embed(member: discord.Member, guild: discord.Guild) -> discord.Embed:
+def build_welcome_embed(member: discord.Member, guild: discord.Guild, *, with_gif: bool = True) -> discord.Embed:
+    """Minimal animated welcome card shown when a real member joins the server."""
     embed = discord.Embed(
-        title="⚡ WELCOME TO PEDRAO22K.",
-        description=(
-            f"Hey {member.mention}, welcome to **Pedrao22k Services**!\n"
-            "The premier destination for competitive boosting, accounts & mastery camos.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "### 🧭 QUICK START GUIDE:\n"
-            "> 1️⃣ **Get Verified:** Unlock access in your server verification room.\n"
-            "> 2️⃣ **Read Guidelines:** Make sure to check our trading policy & rules.\n"
-            "> 3️⃣ **Explore Shop:** Browse our boosting, camo, and stock channels.\n"
-            "> 4️⃣ **Place Order:** Ready? Open a private ticket in <#1552641905806811136>.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "🛡️ **Accepted Payments:** `USDT (TRC20 / BEP20)` • `LTC` • `BTC`\n"
-            "⚡ **Support:** Our verified team is available 24/7 to assist you."
-        ),
-        color=0xF59E0B,
-        timestamp=datetime.datetime.utcnow()
+        title=f"Hello {member.display_name}!",
+        color=0xF5C451,
     )
     embed.set_thumbnail(url=member.display_avatar.url)
-    if guild.icon:
-        embed.set_author(name=f"{guild.name} Official", icon_url=guild.icon.url)
-    embed.set_footer(text=f"Pedrao22k. | Member #{guild.member_count}")
+    if with_gif:
+        embed.set_image(url="attachment://welcome_pedrao22k.gif")
     return embed
+
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    # Do not publish a public welcome for bots/integrations joining the guild.
+    if member.bot:
+        return
+
     channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
-    if channel:
-        embed = build_welcome_embed(member, member.guild)
-        await channel.send(content=f"👋 Welcome to the server, {member.mention}!", embed=embed)
+    if not channel:
+        print(f"Welcome channel {WELCOME_CHANNEL_ID} was not found in guild {member.guild.id}.")
+        return
+
+    gif_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "welcome_pedrao22k.gif")
+
+    try:
+        if os.path.isfile(gif_path):
+            welcome_file = discord.File(gif_path, filename="welcome_pedrao22k.gif")
+            await channel.send(
+                embed=build_welcome_embed(member, member.guild, with_gif=True),
+                file=welcome_file,
+            )
+        else:
+            print(f"Welcome GIF missing at {gif_path}; sending safe fallback without animation.")
+            await channel.send(embed=build_welcome_embed(member, member.guild, with_gif=False))
+    except Exception as e:
+        print(f"Welcome message error for member {member.id}: {e}")
+        try:
+            await channel.send(embed=build_welcome_embed(member, member.guild, with_gif=False))
+        except Exception as fallback_error:
+            print(f"Welcome fallback error for member {member.id}: {fallback_error}")
 
 @bot.event
 async def on_message(message: discord.Message):
