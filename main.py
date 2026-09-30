@@ -359,7 +359,7 @@ def build_seller_status_embed(
         description = (
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🆔 **Offer:** `{offer_id}`\n"
-            f"🏷️ **Offer Title:** `{offer_title}`\n"
+            f"🏷️️ **Offer Title:** `{offer_title}`\n"
             f"💰 **Asking Price:** `{price_str}`\n"
             "⛔ **Current Status:** `Sold / No Longer Available`"
         )
@@ -587,7 +587,7 @@ async def launch_activity_safely(interaction: discord.Interaction, action_key: s
     if len(_activity_click_guard) > 2000:
         cutoff = now - 60.0
         for old_key, old_time in list(_activity_click_guard.items()):
-            if old_time < cutoff:
+            if old_key < cutoff:
                 _activity_click_guard.pop(old_key, None)
 
     previous = _activity_click_guard.get(key, 0.0)
@@ -1411,7 +1411,7 @@ class MarketplaceCarouselView(View):
 
         existing = discord.utils.get(category.text_channels, name=channel_name)
         if existing:
-            return await interaction.response.send_message(f"⚠️ You already have an open buying ticket: {existing.mention}", ephemeral=True)
+            return await interaction.response.send_message(f"⚠️️ You already have an open buying ticket: {existing.mention}", ephemeral=True)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -2577,7 +2577,7 @@ class FeedbackView(View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="Leave Feedback ⭐", style=discord.ButtonStyle.success, emoji="✍️️", custom_id="leave_vouch_btn")
+    @discord.ui.button(label="Leave Feedback ⭐", style=discord.ButtonStyle.success, emoji="✍️", custom_id="leave_vouch_btn")
     async def open_feedback_modal(self, interaction: discord.Interaction, button: Button):
         if not await allow_single_interaction(interaction, "open_feedback_modal", cooldown=6.0):
             return
@@ -2685,6 +2685,18 @@ async def sold_command(interaction: discord.Interaction, account_id: Optional[st
     )
 
 @bot.command()
+async def test(ctx):
+    channel = ctx.guild.get_channel(WELCOME_CHANNEL_ID)
+    if not channel:
+        return await ctx.send("❌ روم الترحيب غير موجودة أو الأيدي خطأ.")
+    try:
+        embed = build_welcome_embed(ctx.author, ctx.guild)
+        await channel.send(embed=embed)
+        await ctx.send(f"✅ تم إرسال ترحيب التجربة إلى {channel.mention} بنجاح!", delete_after=5)
+    except Exception as e:
+        await ctx.send(f"❌ حدث خطأ أثناء إرسال الترحيب: `{e}`")
+
+@bot.command()
 @commands.has_permissions(administrator=True)
 async def testwelcome(ctx):
     channel = ctx.guild.get_channel(WELCOME_CHANNEL_ID)
@@ -2784,6 +2796,7 @@ async def setup_market(ctx):
     if ctx.guild.icon:
         guild_icon_url = ctx.guild.icon.url
         embed.set_author(name="Pedrao22k Marketplace", icon_url=guild_icon_url)
+        embed.set_thumbnail(url=guild_icon_url)
     embed.set_footer(text="Pedrao22k. | Verified Seller Hub")
     await ctx.send(embed=embed, view=MarketplaceLauncherView())
 
