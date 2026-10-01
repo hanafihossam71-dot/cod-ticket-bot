@@ -1130,42 +1130,6 @@ class ShopLaunchView(View):
         await launch_activity_safely(interaction, "shop_entry")
 
 
-class PurchaseOfferActivityView(View):
-    """Persistent View Offer button for purchase tickets.
-
-    The offer is resolved from the ticket channel topic by the Activity, so the
-    same persistent custom_id works for every ticket and survives bot restarts.
-    """
-    def __init__(self):
-        super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="View Offer",
-        style=discord.ButtonStyle.secondary,
-        emoji="👁️",
-        custom_id="pedrao22k_view_offer_activity",
-    )
-    async def view_offer(self, interaction: discord.Interaction, button: Button):
-        channel_id = getattr(interaction.channel, "id", 0)
-        # A unified purchase ticket can contain several offers. Resolve the
-        # exact offer from the message whose View Offer button was clicked and
-        # update only the Activity context stored in the channel topic.
-        try:
-            if isinstance(interaction.channel, discord.TextChannel) and interaction.message and interaction.message.embeds:
-                offer_number = normalize_offer_number(interaction.message.embeds[0].title or "")
-                if offer_number is not None:
-                    listing = await fetch_listing_by_offer_number(offer_number)
-                    ticket = await get_active_ticket_by_channel(interaction.channel.id)
-                    if listing and ticket:
-                        await interaction.channel.edit(
-                            topic=purchase_ticket_topic(str(listing["id"]), offer_number, int(ticket["buyer_discord_id"])),
-                            reason=f"Activity View Offer context -> {format_offer_id(offer_number)}",
-                        )
-        except Exception as e:
-            print(f"View Offer context update error for {channel_id}: {e}")
-        await launch_activity_safely(interaction, f"view_offer:{channel_id}")
-
-
 class SellerApprovedActivityView(View):
     """Persistent launcher shown after a seller listing is approved.
 
@@ -1289,28 +1253,42 @@ async def ensure_shop_entry_message():
         print(f"Accounts Shop entry message error: {e}")
 
 
-async def ensure_purchase_ticket_activity_button(channel: discord.TextChannel):
-    """Upgrade an existing purchase ticket's legacy URL button in place."""
+async def remove_purchase_ticket_shop_buttons(channel: discord.TextChannel):
+    """Remove old Shop/View Offer buttons only from Bot offer cards in buyer tickets.
+
+    Existing tickets may contain multiple offer cards. Do not edit cards that
+    already have no buttons: unnecessary PATCH requests risk Discord rate limits.
+    """
+    removed = 0
     try:
-        async for message in channel.history(limit=50):
-            if message.author.id != bot.user.id or not message.embeds:
+        async for message in channel.history(limit=100):
+            if not bot.user or message.author.id != bot.user.id or not message.embeds:
                 continue
             footer = message.embeds[0].footer.text if message.embeds[0].footer else None
-            if footer == "Pedrao22k Accounts Shop":
-                await message.edit(view=PurchaseOfferActivityView())
-                return True
+            if footer != "Pedrao22k Accounts Shop" or not message.components:
+                continue
+            # Only change the offer card if it has the retired shop-entry button.
+            buttons = [child for row in message.components for child in getattr(row, "children", [])]
+            if not any(
+                getattr(child, "custom_id", None) == "pedrao22k_view_offer_activity"
+                or (getattr(child, "url", None) and any(term in (getattr(child, "label", "") or "").lower() for term in ("accounts", "view offer", "shop")))
+                for child in buttons
+            ):
+                continue
+            await message.edit(view=None)
+            removed += 1
     except Exception as e:
-        print(f"Purchase ticket View Offer refresh error for {channel.id}: {e}")
-    return False
+        print(f"Purchase ticket legacy Shop button cleanup error for {channel.id}: {e}")
+    return removed
 
 
-async def refresh_purchase_ticket_activity_buttons():
+async def cleanup_purchase_ticket_shop_buttons():
     category = bot.get_channel(TICKET_CATEGORY_ID)
     if not isinstance(category, discord.CategoryChannel):
         return
     for channel in list(category.text_channels):
         if parse_purchase_ticket_topic(channel.topic):
-            await ensure_purchase_ticket_activity_button(channel)
+            await remove_purchase_ticket_shop_buttons(channel)
 
 def is_staff_member(member: discord.Member) -> bool:
     return bool(member.guild_permissions.administrator or any(role.id == SUPPORT_ROLE_ID for role in member.roles))
@@ -2618,7 +2596,7 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
             support_role = guild.get_role(SUPPORT_ROLE_ID)
             role_ping = support_role.mention if support_role else ""
             content = f"{buyer.mention} {role_ping}" if created_ticket else None
-            await channel.send(content=content, embed=embed, view=PurchaseOfferActivityView())
+            await channel.send(content=content, embed=embed)
             if created_ticket:
                 await channel.send(view=CloseTicketView())
         except Exception:
@@ -4041,7 +4019,7 @@ async def run_discord_startup_maintenance():
     # Channel permission PATCH, old-ticket edits and guild command sync can hit 429.
     # Keep all of them outside on_ready so a long retry_after never blocks startup.
     await _run_startup_maintenance_step("Shop entry channel", ensure_shop_entry_message)
-    await _run_startup_maintenance_step("purchase ticket buttons", refresh_purchase_ticket_activity_buttons)
+    await _run_startup_maintenance_step("purchase ticket button cleanup", cleanup_purchase_ticket_shop_buttons)
     await _run_startup_maintenance_step("seller portal launchers", refresh_seller_portal_launchers)
 
 
@@ -4074,7 +4052,6 @@ async def on_ready():
         bot.add_view(FeedbackView())
         bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
         bot.add_view(ShopLaunchView())
-        bot.add_view(PurchaseOfferActivityView())
         persistent_views_registered = True
 
     if not background_tasks_started:
