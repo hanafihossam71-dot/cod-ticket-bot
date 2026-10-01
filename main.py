@@ -4,6 +4,7 @@ from discord import app_commands
 from discord.ui import Button, View, Select, Modal, TextInput
 import asyncio
 import io
+import json
 import datetime
 import os
 import time
@@ -97,9 +98,10 @@ STORAGE_IMAGE_CACHE_CONTROL = "31536000"
 
 # Seller screenshots remain visually high quality, but the files stored in the Shop
 # are normalized so a single oversized upload can never make View Offer unnecessarily
-# heavy. 1.90 MiB is the normal target; 2 MiB is the absolute safety ceiling.
-SHOP_IMAGE_TARGET_BYTES = int(1.90 * 1024 * 1024)
-SHOP_IMAGE_HARD_LIMIT_BYTES = 2 * 1024 * 1024
+# heavy. Files up to 3 MiB are preserved; larger uploads are optimized to ~2.90 MiB
+# so the final stored image always stays below the 3 MiB safety ceiling.
+SHOP_IMAGE_TARGET_BYTES = int(2.90 * 1024 * 1024)
+SHOP_IMAGE_HARD_LIMIT_BYTES = 3 * 1024 * 1024
 SHOP_IMAGE_WEBP_QUALITY_STEPS = (96, 94, 92, 90, 88, 86, 84, 82, 80, 78, 76, 74, 72, 70, 68)
 
 # The card cover gets its own fast representation only when the already-optimized
@@ -193,20 +195,21 @@ def validate_uploaded_image_file(source_path: str) -> str:
 
 
 def optimize_uploaded_image_file(source_path: str) -> str:
-    """Normalize oversized Seller Portal uploads to <=1.90 MiB whenever possible.
+    """Normalize oversized Seller Portal uploads to stay below the 3 MiB Shop limit.
 
-    Files already at or under the target are preserved byte-for-byte after validation.
-    Oversized files are converted to high-quality WebP; resolution is reduced only when required.
+    Files already at or under 3 MiB are preserved byte-for-byte after validation.
+    Larger files are converted to high-quality WebP targeting ~2.90 MiB; resolution is
+    reduced only when compression alone is not enough.
     """
     source_path = validate_uploaded_image_file(source_path)
-    if os.path.getsize(source_path) <= SHOP_IMAGE_TARGET_BYTES:
+    if os.path.getsize(source_path) <= SHOP_IMAGE_HARD_LIMIT_BYTES:
         return source_path
 
     with Image.open(source_path) as opened:
         image = _to_rgb_image(opened)
     payload = _encode_webp_under_limit(image, SHOP_IMAGE_TARGET_BYTES, SHOP_IMAGE_WEBP_QUALITY_STEPS)
     if len(payload) > SHOP_IMAGE_HARD_LIMIT_BYTES:
-        raise RuntimeError("Could not optimize image below the 2 MB Shop limit.")
+        raise RuntimeError("Could not optimize image below the 3 MB Shop limit.")
 
     optimized_path = os.path.splitext(source_path)[0] + ".webp"
     with open(optimized_path, "wb") as optimized_file:
@@ -304,7 +307,7 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
             if not os.path.isfile(image_path):
                 raise RuntimeError("An uploaded image is missing from the server.")
             if os.path.getsize(image_path) > SHOP_IMAGE_HARD_LIMIT_BYTES:
-                raise RuntimeError("An uploaded image exceeded the 2 MB Shop limit after optimization.")
+                raise RuntimeError("An uploaded image exceeded the 3 MB Shop limit after optimization.")
             ext = os.path.splitext(image_path)[1].lower() or ".jpg"
             object_path = f"{listing_id}/{index:02d}-{uuid.uuid4().hex}{ext}"
             with open(image_path, "rb") as image_file:
@@ -1332,6 +1335,9 @@ def cleanup_session_files(session_info: dict | None):
     for path in (session_info.get("secondary_files_by_index", {}) or {}).values():
         if path:
             paths.add(str(path))
+    for path in (session_info.get("secondary_files_by_id", {}) or {}).values():
+        if path:
+            paths.add(str(path))
     for path in session_info.get("all_paths", []) or []:
         if path:
             paths.add(str(path))
@@ -1384,7 +1390,9 @@ def register_seller_portal_session(seller_id: int, channel_id: int, launcher_msg
         "cover_file": None,
         "cover_version": 0,
         "secondary_files": [],
-        "secondary_files_by_index": {},
+        "secondary_files_by_index": {},  # Legacy compatibility for sessions opened before V5.72.
+        "secondary_files_by_id": {},
+        "removed_gallery_ids": set(),
         "upload_lock": asyncio.Lock(),
         "finalize_lock": asyncio.Lock(),
         "listing_id": None,
@@ -2710,9 +2718,21 @@ HTML_PAGE = """<!DOCTYPE html>
             border: 2px dashed rgba(245, 158, 11, 0.45); border-radius: 14px; padding: 20px 15px;
             cursor: pointer; background: rgba(18, 19, 26, 0.65); text-align: center; margin-bottom: 12px;
         }
-        .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 8px; margin-bottom: 14px; }
-        .preview-item { position: relative; border-radius: 6px; overflow: hidden; border: 2px solid #333; background: #111; }
-        .preview-item img { width: 100%; height: 60px; object-fit: cover; display: block; }
+        .preview-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 10px; margin-bottom: 14px; }
+        .preview-item { position: relative; border-radius: 9px; overflow: hidden; border: 2px solid #333; background: #111; user-select: none; transition: border-color .15s ease, transform .15s ease, opacity .15s ease; }
+        .preview-item.gallery-item { cursor: grab; padding-bottom: 27px; }
+        .preview-item.gallery-item:active { cursor: grabbing; }
+        .preview-item.dragging { opacity: .42; border-color: var(--gold-primary); }
+        .preview-item.drag-over { border-color: var(--gold-primary); transform: translateY(-2px); }
+        .preview-item img { width: 100%; height: 72px; object-fit: cover; display: block; }
+        .preview-order { position: absolute; top: 5px; left: 5px; min-width: 22px; height: 22px; padding: 0 6px; display: flex; align-items: center; justify-content: center; border-radius: 999px; background: rgba(5, 5, 7, .86); border: 1px solid rgba(255,184,0,.65); color: #FFB800; font-size: 11px; font-weight: 900; z-index: 2; }
+        .preview-remove { position: absolute; top: 4px; right: 4px; width: 24px; height: 24px; border-radius: 999px; border: 1px solid rgba(255,255,255,.28); background: rgba(185, 28, 28, .94); color: #fff; font-size: 16px; font-weight: 900; line-height: 20px; cursor: pointer; z-index: 3; }
+        .preview-remove:hover { background: #EF4444; }
+        .preview-controls { position: absolute; left: 0; right: 0; bottom: 0; height: 27px; display: flex; background: rgba(8,8,11,.96); border-top: 1px solid rgba(255,255,255,.08); }
+        .preview-move { flex: 1; border: 0; background: transparent; color: #CBD5E1; font-size: 14px; font-weight: 900; cursor: pointer; }
+        .preview-move:hover:not(:disabled) { color: #FFB800; background: rgba(245,158,11,.12); }
+        .preview-move:disabled { color: #3F4655; cursor: default; }
+        .gallery-help { margin: -4px 0 12px; color: #94A3B8; font-size: 11px; text-align: center; }
         
         .progress-box { display: none; margin-bottom: 20px; }
         .progress-header { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; margin-bottom: 6px; color: #CBD5E1; }
@@ -2765,7 +2785,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <label>⭐ Primary Cover Thumbnail (Main Image)</label>
             <div class="dropzone" onclick="document.getElementById('coverInput').click()">
                 <div style="font-size: 26px; color: #FFB800;">⚡</div>
-                <div id="coverText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to Upload Primary Cover Image • Auto-optimized</div>
+                <div id="coverText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to Upload Primary Cover Image • Auto-optimized to max 3 MB</div>
             </div>
             <input type="file" id="coverInput" accept="image/*" style="display:none;" onchange="handleCoverSelection(this.files[0])">
             <div class="preview-grid" id="coverPreview"></div>
@@ -2774,10 +2794,11 @@ HTML_PAGE = """<!DOCTYPE html>
             <label>📸 OFFER GALLERY CAPTURES</label>
             <div class="dropzone" onclick="document.getElementById('secondaryInput').click()">
                 <div style="font-size: 26px; color: #FFB800;">📸</div>
-                <div id="secondaryText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to upload gallery screenshots (Max 40) • Images auto-optimized to max 2 MB</div>
+                <div id="secondaryText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to upload gallery screenshots (Max 40) • Images auto-optimized to max 3 MB • Drag to reorder</div>
             </div>
             <input type="file" id="secondaryInput" multiple accept="image/*" style="display:none;" onchange="handleSecondarySelection(this.files)">
             <div class="preview-grid" id="secondaryPreview"></div>
+            <div class="gallery-help" id="galleryHelp" style="display:none;">Drag thumbnails to reorder • Use ◀ ▶ on mobile • Click × to remove</div>
 
             <div class="progress-box" id="progressBox">
                 <div class="progress-header">
@@ -2800,12 +2821,22 @@ HTML_PAGE = """<!DOCTYPE html>
         const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
         let coverFile = null;
-        let secondaryFiles = [];
+        let secondaryFiles = []; // [{ id, file, previewUrl }], in the exact final Shop order.
         let isCoverUploaded = false;
         let coverSelectionVersion = 0;
-        let pendingUploads = 0;
+        let coverUploadPending = false;
         const failedUploadKeys = new Set();
-        const uploadedSecondaryIndexes = new Set();
+        const uploadedGalleryIds = new Set();
+        const pendingGalleryIds = new Set();
+        const galleryUploadXhrs = new Map();
+        let draggedGalleryId = null;
+
+        function newGalleryId() {
+            if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+                return window.crypto.randomUUID();
+            }
+            return `img-${Date.now()}-${Math.random().toString(16).slice(2)}-${Math.random().toString(16).slice(2)}`;
+        }
 
         function toggleSelectAll(btn) {
             const checkboxes = document.querySelectorAll('input[name="accountItem"]');
@@ -2814,15 +2845,27 @@ HTML_PAGE = """<!DOCTYPE html>
             btn.innerText = allChecked ? "Select All" : "Deselect All";
         }
 
+        function currentGalleryIds() {
+            return secondaryFiles.map(item => item.id);
+        }
+
+        function currentGalleryIdSet() {
+            return new Set(currentGalleryIds());
+        }
+
         function checkSubmitReady() {
             const submitBtn = document.getElementById('submitBtn');
-            const allGalleryUploaded = secondaryFiles.length > 0 && uploadedSecondaryIndexes.size === secondaryFiles.length;
+            const currentIds = currentGalleryIds();
+            const allGalleryUploaded = currentIds.length > 0 && currentIds.every(id => uploadedGalleryIds.has(id));
+            const hasCurrentFailure = currentIds.some(id => failedUploadKeys.has(`gallery:${id}`));
             submitBtn.disabled = !(
                 coverFile &&
                 isCoverUploaded &&
+                !coverUploadPending &&
                 allGalleryUploaded &&
-                pendingUploads === 0 &&
-                failedUploadKeys.size === 0
+                pendingGalleryIds.size === 0 &&
+                !hasCurrentFailure &&
+                !failedUploadKeys.has("cover")
             );
         }
 
@@ -2844,6 +2887,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const thisVersion = coverSelectionVersion;
             coverFile = file;
             isCoverUploaded = false;
+            coverUploadPending = true;
             failedUploadKeys.delete("cover");
 
             const grid = document.getElementById('coverPreview');
@@ -2859,8 +2903,172 @@ HTML_PAGE = """<!DOCTYPE html>
             return `${file.name}|${file.size}|${file.lastModified}`;
         }
 
+        function updateGalleryText(skipped = 0, rejectedTooLarge = 0) {
+            const text = document.getElementById('secondaryText');
+            const help = document.getElementById('galleryHelp');
+            if (secondaryFiles.length > 0) {
+                let suffix = '';
+                if (skipped > 0) suffix += ` • ${skipped} Skipped`;
+                if (rejectedTooLarge > 0) suffix += ` • ${rejectedTooLarge} Over 25 MB`;
+                text.innerText = `✨ ${secondaryFiles.length}/${MAX_GALLERY_IMAGES} Gallery Screenshots Loaded${suffix}`;
+                text.style.color = '#FFB800';
+                help.style.display = 'block';
+            } else {
+                text.innerText = 'Click to upload gallery screenshots (Max 40) • Images auto-optimized to max 3 MB • Drag to reorder';
+                text.style.color = '#FFF';
+                help.style.display = 'none';
+            }
+        }
+
+        function moveGalleryImage(galleryId, delta) {
+            const index = secondaryFiles.findIndex(item => item.id === galleryId);
+            if (index < 0) return;
+            const target = index + delta;
+            if (target < 0 || target >= secondaryFiles.length) return;
+            const [item] = secondaryFiles.splice(index, 1);
+            secondaryFiles.splice(target, 0, item);
+            renderSecondaryPreviews();
+            checkSubmitReady();
+        }
+
+        function reorderGalleryImage(draggedId, targetId) {
+            if (!draggedId || !targetId || draggedId === targetId) return;
+            const from = secondaryFiles.findIndex(item => item.id === draggedId);
+            const to = secondaryFiles.findIndex(item => item.id === targetId);
+            if (from < 0 || to < 0) return;
+            const [item] = secondaryFiles.splice(from, 1);
+            const adjustedTarget = from < to ? to - 1 : to;
+            secondaryFiles.splice(adjustedTarget, 0, item);
+            renderSecondaryPreviews();
+            checkSubmitReady();
+        }
+
+        function renderSecondaryPreviews() {
+            const grid = document.getElementById('secondaryPreview');
+            grid.innerHTML = '';
+
+            secondaryFiles.forEach((itemData, index) => {
+                const item = document.createElement('div');
+                item.className = 'preview-item gallery-item';
+                item.draggable = true;
+                item.dataset.galleryId = itemData.id;
+
+                const img = document.createElement('img');
+                img.src = itemData.previewUrl;
+                img.alt = `Gallery image ${index + 1}`;
+                img.draggable = false;
+                item.appendChild(img);
+
+                const order = document.createElement('span');
+                order.className = 'preview-order';
+                order.textContent = String(index + 1);
+                item.appendChild(order);
+
+                const remove = document.createElement('button');
+                remove.type = 'button';
+                remove.className = 'preview-remove';
+                remove.title = 'Remove image';
+                remove.setAttribute('aria-label', `Remove gallery image ${index + 1}`);
+                remove.textContent = '×';
+                remove.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    removeGalleryImage(itemData.id);
+                });
+                item.appendChild(remove);
+
+                const controls = document.createElement('div');
+                controls.className = 'preview-controls';
+
+                const left = document.createElement('button');
+                left.type = 'button';
+                left.className = 'preview-move';
+                left.textContent = '◀';
+                left.title = 'Move left';
+                left.disabled = index === 0;
+                left.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    moveGalleryImage(itemData.id, -1);
+                });
+
+                const right = document.createElement('button');
+                right.type = 'button';
+                right.className = 'preview-move';
+                right.textContent = '▶';
+                right.title = 'Move right';
+                right.disabled = index === secondaryFiles.length - 1;
+                right.addEventListener('click', (event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    moveGalleryImage(itemData.id, 1);
+                });
+
+                controls.appendChild(left);
+                controls.appendChild(right);
+                item.appendChild(controls);
+
+                item.addEventListener('dragstart', (event) => {
+                    draggedGalleryId = itemData.id;
+                    item.classList.add('dragging');
+                    if (event.dataTransfer) {
+                        event.dataTransfer.effectAllowed = 'move';
+                        event.dataTransfer.setData('text/plain', itemData.id);
+                    }
+                });
+                item.addEventListener('dragend', () => {
+                    draggedGalleryId = null;
+                    document.querySelectorAll('.preview-item').forEach(node => node.classList.remove('dragging', 'drag-over'));
+                });
+                item.addEventListener('dragover', (event) => {
+                    event.preventDefault();
+                    if (draggedGalleryId && draggedGalleryId !== itemData.id) item.classList.add('drag-over');
+                });
+                item.addEventListener('dragleave', () => item.classList.remove('drag-over'));
+                item.addEventListener('drop', (event) => {
+                    event.preventDefault();
+                    item.classList.remove('drag-over');
+                    const sourceId = draggedGalleryId || (event.dataTransfer ? event.dataTransfer.getData('text/plain') : '');
+                    reorderGalleryImage(sourceId, itemData.id);
+                });
+
+                grid.appendChild(item);
+            });
+
+            updateGalleryText();
+        }
+
+        async function removeGalleryImage(galleryId) {
+            const index = secondaryFiles.findIndex(item => item.id === galleryId);
+            if (index < 0) return;
+            const [removed] = secondaryFiles.splice(index, 1);
+
+            const xhr = galleryUploadXhrs.get(galleryId);
+            if (xhr && xhr.readyState !== XMLHttpRequest.DONE) {
+                try { xhr.abort(); } catch (e) {}
+            }
+            galleryUploadXhrs.delete(galleryId);
+            pendingGalleryIds.delete(galleryId);
+            uploadedGalleryIds.delete(galleryId);
+            failedUploadKeys.delete(`gallery:${galleryId}`);
+            if (removed && removed.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+
+            renderSecondaryPreviews();
+            checkSubmitReady();
+
+            if (!session) return;
+            try {
+                const formData = new FormData();
+                formData.append('session', session);
+                formData.append('gallery_id', galleryId);
+                await fetch('/api/remove_gallery_image', { method: 'POST', body: formData });
+            } catch (e) {
+                // Server session cleanup is a fallback; the removed ID is never sent in final galleryOrder.
+            }
+        }
+
         function handleSecondarySelection(files) {
-            const existing = new Set(secondaryFiles.map(fileFingerprint));
+            const existing = new Set(secondaryFiles.map(item => fileFingerprint(item.file)));
             const coverFingerprint = coverFile ? fileFingerprint(coverFile) : null;
             const accepted = [];
             let skipped = 0;
@@ -2887,49 +3095,39 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
 
                 existing.add(fingerprint);
-                const orderIndex = secondaryFiles.length;
-                secondaryFiles.push(file);
-                accepted.push({ file, orderIndex });
+                const galleryId = newGalleryId();
+                const itemData = { id: galleryId, file, previewUrl: URL.createObjectURL(file) };
+                secondaryFiles.push(itemData);
+                accepted.push(itemData);
             }
 
-            const grid = document.getElementById('secondaryPreview');
-            grid.innerHTML = '';
-            secondaryFiles.forEach(file => {
-                const item = document.createElement('div');
-                item.className = 'preview-item';
-                item.innerHTML = `<img src="${URL.createObjectURL(file)}">`;
-                grid.appendChild(item);
-            });
-
-            if (secondaryFiles.length > 0) {
-                let suffix = '';
-                if (skipped > 0) suffix += ` • ${skipped} Skipped`;
-                if (rejectedTooLarge > 0) suffix += ` • ${rejectedTooLarge} Over 25 MB`;
-                document.getElementById('secondaryText').innerText =
-                    `✨ ${secondaryFiles.length}/${MAX_GALLERY_IMAGES} Gallery Screenshots Loaded${suffix}`;
-                document.getElementById('secondaryText').style.color = '#FFB800';
-            }
-
-            accepted.forEach(({ file, orderIndex }) => uploadImagesDirectly(file, false, orderIndex, null));
+            renderSecondaryPreviews();
+            updateGalleryText(skipped, rejectedTooLarge);
+            accepted.forEach(itemData => uploadImagesDirectly(itemData.file, false, itemData.id, null));
+            document.getElementById('secondaryInput').value = '';
             checkSubmitReady();
         }
 
-        function uploadImagesDirectly(file, isCover, orderIndex, coverVersion) {
+        function uploadImagesDirectly(file, isCover, galleryId, coverVersion) {
             if (!session) {
                 alert("Session missing. Please reopen from Discord ticket.");
                 return;
             }
 
-            const uploadKey = isCover ? "cover" : `gallery:${orderIndex}`;
-            pendingUploads += 1;
+            const uploadKey = isCover ? "cover" : `gallery:${galleryId}`;
             failedUploadKeys.delete(uploadKey);
-            if (!isCover) uploadedSecondaryIndexes.delete(orderIndex);
+            if (isCover) {
+                coverUploadPending = true;
+            } else {
+                pendingGalleryIds.add(galleryId);
+                uploadedGalleryIds.delete(galleryId);
+            }
             checkSubmitReady();
 
             const formData = new FormData();
             formData.append("session", session);
             formData.append("is_cover", isCover ? "1" : "0");
-            if (!isCover) formData.append("order_index", String(orderIndex));
+            if (!isCover) formData.append("gallery_id", String(galleryId));
             if (isCover) formData.append("cover_version", String(coverVersion || 0));
             formData.append("files", file);
 
@@ -2945,6 +3143,7 @@ HTML_PAGE = """<!DOCTYPE html>
 
             const xhr = new XMLHttpRequest();
             xhr.open("POST", "/api/upload_images_only", true);
+            if (!isCover) galleryUploadXhrs.set(galleryId, xhr);
 
             xhr.upload.onprogress = function(e) {
                 if (e.lengthComputable) {
@@ -2954,29 +3153,48 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
             };
 
-            const finish = (success, message) => {
-                pendingUploads = Math.max(0, pendingUploads - 1);
+            let finished = false;
+            const finish = (success, message, { silent = false } = {}) => {
+                if (finished) return;
+                finished = true;
 
-                if (success) {
+                if (isCover) {
+                    if (coverVersion === coverSelectionVersion) coverUploadPending = false;
+                } else {
+                    galleryUploadXhrs.delete(galleryId);
+                    pendingGalleryIds.delete(galleryId);
+                }
+
+                if (isCover && coverVersion !== coverSelectionVersion) {
+                    checkSubmitReady();
+                    return;
+                }
+
+                const stillPresent = isCover || currentGalleryIdSet().has(galleryId);
+                if (success && stillPresent) {
                     failedUploadKeys.delete(uploadKey);
                     if (isCover) {
                         if (coverVersion === coverSelectionVersion) isCoverUploaded = true;
                     } else {
-                        uploadedSecondaryIndexes.add(orderIndex);
+                        uploadedGalleryIds.add(galleryId);
                     }
-                } else {
+                } else if (!success && stillPresent) {
                     failedUploadKeys.add(uploadKey);
                     if (isCover && coverVersion === coverSelectionVersion) isCoverUploaded = false;
-                    if (!isCover) uploadedSecondaryIndexes.delete(orderIndex);
-                    if (message) alert(message);
+                    if (!isCover) uploadedGalleryIds.delete(galleryId);
+                    if (message && !silent) alert(message);
+                } else {
+                    failedUploadKeys.delete(uploadKey);
+                    if (!isCover) uploadedGalleryIds.delete(galleryId);
                 }
 
-                if (pendingUploads === 0) {
+                const uploadsStillPending = coverUploadPending || pendingGalleryIds.size > 0;
+                if (!uploadsStillPending) {
                     progressBarFill.style.width = success ? "100%" : "0%";
                     progressPercent.innerText = success ? "100%" : "0%";
                     progressText.innerText = success ? "✨ All Uploads Complete!" : "⚠️ Upload Error";
                     setTimeout(() => {
-                        if (pendingUploads === 0) progressBox.style.display = "none";
+                        if (!coverUploadPending && pendingGalleryIds.size === 0) progressBox.style.display = "none";
                     }, 800);
                 }
                 checkSubmitReady();
@@ -2999,6 +3217,10 @@ HTML_PAGE = """<!DOCTYPE html>
                 finish(false, "Network error while uploading image.");
             };
 
+            xhr.onabort = function() {
+                finish(false, null, { silent: true });
+            };
+
             xhr.send(formData);
         }
 
@@ -3018,12 +3240,15 @@ HTML_PAGE = """<!DOCTYPE html>
                 alert("Please fill in all fields, upload primary cover, and at least one gallery image.");
                 return;
             }
-            if (pendingUploads > 0) {
+            const galleryIds = currentGalleryIds();
+            if (coverUploadPending || pendingGalleryIds.size > 0) {
                 alert("Please wait for all images to finish uploading.");
                 return;
             }
-            if (!isCoverUploaded || uploadedSecondaryIndexes.size !== secondaryFiles.length || failedUploadKeys.size > 0) {
-                alert("One or more images have not uploaded successfully. Please reopen the portal and retry.");
+            const allGalleryUploaded = galleryIds.every(id => uploadedGalleryIds.has(id));
+            const hasCurrentFailure = galleryIds.some(id => failedUploadKeys.has(`gallery:${id}`));
+            if (!isCoverUploaded || !allGalleryUploaded || hasCurrentFailure || failedUploadKeys.has("cover")) {
+                alert("One or more images have not uploaded successfully. Please retry the affected image before submitting.");
                 return;
             }
 
@@ -3049,6 +3274,7 @@ HTML_PAGE = """<!DOCTYPE html>
             formData.append("items", itemsString);
             formData.append("description", desc);
             formData.append("expectedGalleryCount", String(secondaryFiles.length));
+            formData.append("galleryOrder", JSON.stringify(galleryIds));
 
             try {
                 const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
@@ -3104,7 +3330,8 @@ async def handle_upload_images_only(request):
         reader = await request.multipart()
         session_id = None
         is_cover = "0"
-        order_index = None
+        order_index = None  # Legacy V5.71 client fallback.
+        gallery_id = None
         cover_version = 0
         raw_file_path = None
 
@@ -3120,6 +3347,8 @@ async def handle_upload_images_only(request):
             elif part.name == "order_index":
                 raw_index = (await part.read()).decode("utf-8").strip()
                 order_index = int(raw_index) if raw_index else None
+            elif part.name == "gallery_id":
+                gallery_id = (await part.read()).decode("utf-8").strip()
             elif part.name == "cover_version":
                 raw_version = (await part.read()).decode("utf-8").strip()
                 cover_version = int(raw_version or 0)
@@ -3172,22 +3401,50 @@ async def handle_upload_images_only(request):
                     except OSError:
                         pass
             else:
-                if order_index is None or order_index < 0 or order_index >= SELLER_PORTAL_MAX_GALLERY_IMAGES:
-                    cleanup_session_files({"cover_file": saved_path})
-                    return web.json_response(
-                        {"status": "error", "error": f"Gallery supports a maximum of {SELLER_PORTAL_MAX_GALLERY_IMAGES} images."},
-                        status=400,
-                    )
+                if gallery_id:
+                    if len(gallery_id) > 96 or not re.fullmatch(r"[A-Za-z0-9_-]+", gallery_id):
+                        cleanup_session_files({"cover_file": saved_path})
+                        return web.json_response({"status": "error", "error": "Invalid gallery image id."}, status=400)
 
-                by_index = session_info["secondary_files_by_index"]
-                previous = by_index.get(order_index)
-                by_index[order_index] = saved_path
-                session_info["secondary_files"] = [by_index[idx] for idx in sorted(by_index)]
-                if previous and previous != saved_path and os.path.isfile(previous):
-                    try:
-                        os.remove(previous)
-                    except OSError:
-                        pass
+                    removed_ids = session_info.setdefault("removed_gallery_ids", set())
+                    if gallery_id in removed_ids:
+                        cleanup_session_files({"cover_file": saved_path})
+                        return web.json_response({"status": "ok", "removed": True})
+
+                    by_id = session_info.setdefault("secondary_files_by_id", {})
+                    if gallery_id not in by_id and len(by_id) >= SELLER_PORTAL_MAX_GALLERY_IMAGES:
+                        cleanup_session_files({"cover_file": saved_path})
+                        return web.json_response(
+                            {"status": "error", "error": f"Gallery supports a maximum of {SELLER_PORTAL_MAX_GALLERY_IMAGES} images."},
+                            status=400,
+                        )
+
+                    previous = by_id.get(gallery_id)
+                    by_id[gallery_id] = saved_path
+                    session_info["secondary_files"] = list(by_id.values())
+                    if previous and previous != saved_path and os.path.isfile(previous):
+                        try:
+                            os.remove(previous)
+                        except OSError:
+                            pass
+                else:
+                    # Backward-compatible path for a portal page loaded from V5.71.
+                    if order_index is None or order_index < 0 or order_index >= SELLER_PORTAL_MAX_GALLERY_IMAGES:
+                        cleanup_session_files({"cover_file": saved_path})
+                        return web.json_response(
+                            {"status": "error", "error": f"Gallery supports a maximum of {SELLER_PORTAL_MAX_GALLERY_IMAGES} images."},
+                            status=400,
+                        )
+
+                    by_index = session_info["secondary_files_by_index"]
+                    previous = by_index.get(order_index)
+                    by_index[order_index] = saved_path
+                    session_info["secondary_files"] = [by_index[idx] for idx in sorted(by_index)]
+                    if previous and previous != saved_path and os.path.isfile(previous):
+                        try:
+                            os.remove(previous)
+                        except OSError:
+                            pass
 
             session_info["all_paths"] = None
             session_info["last_activity_at"] = utc_now()
@@ -3205,6 +3462,44 @@ async def handle_upload_images_only(request):
         status = 400 if isinstance(e, (RuntimeError, ValueError)) else 500
         return web.json_response({"status": "error", "error": str(e)}, status=status)
 
+async def handle_remove_gallery_image(request):
+    """Remove one temporary gallery upload safely, including uploads racing in-flight."""
+    try:
+        data = await request.post()
+        session_id = str(data.get("session") or "").strip()
+        gallery_id = str(data.get("gallery_id") or "").strip()
+        if not session_id or not gallery_id:
+            return web.json_response({"status": "error", "error": "Missing session or gallery image id."}, status=400)
+        if len(gallery_id) > 96 or not re.fullmatch(r"[A-Za-z0-9_-]+", gallery_id):
+            return web.json_response({"status": "error", "error": "Invalid gallery image id."}, status=400)
+
+        session_info = active_web_sessions.get(session_id)
+        if not session_info:
+            return web.json_response({"status": "error", "error": "Session expired or bot restarted."}, status=400)
+
+        removed_path = None
+        async with session_info["upload_lock"]:
+            if session_info.get("finalized"):
+                return web.json_response({"status": "error", "error": "This listing was already submitted."}, status=409)
+
+            session_info.setdefault("removed_gallery_ids", set()).add(gallery_id)
+            by_id = session_info.setdefault("secondary_files_by_id", {})
+            removed_path = by_id.pop(gallery_id, None)
+            session_info["secondary_files"] = list(by_id.values())
+            session_info["all_paths"] = None
+            session_info["last_activity_at"] = utc_now()
+
+        if removed_path and os.path.isfile(removed_path):
+            try:
+                os.remove(removed_path)
+            except OSError:
+                pass
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        print(f"Gallery remove error: {e}")
+        return web.json_response({"status": "error", "error": "Could not remove this gallery image."}, status=500)
+
+
 async def _handle_finalize_listing(request, data):
     try:
         session_id = data.get("session")
@@ -3214,6 +3509,7 @@ async def _handle_finalize_listing(request, data):
         items_list = data.get("items", "None")
         description = data.get("description", "")
         expected_gallery_count_raw = data.get("expectedGalleryCount", "")
+        gallery_order_raw = data.get("galleryOrder", "")
 
         # Persist every Seller Portal highlight. The legacy `category` field
         # remains populated with the first supported highlight so older Shop
@@ -3261,25 +3557,65 @@ async def _handle_finalize_listing(request, data):
         if session_info.get("finalized"):
             return web.json_response({"status": "ok", "count": len(session_info.get("discord_cdn_urls", []))})
 
-        secondary_by_index = dict(session_info.get("secondary_files_by_index", {}))
-        if len(secondary_by_index) != expected_gallery_count:
-            return web.json_response(
-                {
-                    "status": "error",
-                    "error": f"Please wait for all gallery uploads to finish ({len(secondary_by_index)}/{expected_gallery_count} received).",
-                },
-                status=409,
-            )
+        secondary_by_id = dict(session_info.get("secondary_files_by_id", {}))
+        gallery_order = None
+        if gallery_order_raw:
+            try:
+                decoded_order = json.loads(str(gallery_order_raw))
+                if not isinstance(decoded_order, list):
+                    raise ValueError()
+                gallery_order = [str(value) for value in decoded_order]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return web.json_response({"status": "error", "error": "Invalid gallery order."}, status=400)
 
-        expected_indexes = list(range(expected_gallery_count))
-        if sorted(secondary_by_index) != expected_indexes:
-            return web.json_response(
-                {"status": "error", "error": "Gallery upload order is incomplete. Please reopen the portal and retry."},
-                status=409,
-            )
+            if len(gallery_order) != expected_gallery_count or len(set(gallery_order)) != len(gallery_order):
+                return web.json_response({"status": "error", "error": "Gallery order does not match the selected images."}, status=409)
+            if any(len(image_id) > 96 or not re.fullmatch(r"[A-Za-z0-9_-]+", image_id) for image_id in gallery_order):
+                return web.json_response({"status": "error", "error": "Invalid gallery image id in order."}, status=400)
+
+            missing_ids = [image_id for image_id in gallery_order if image_id not in secondary_by_id]
+            if missing_ids:
+                return web.json_response(
+                    {
+                        "status": "error",
+                        "error": f"Please wait for all gallery uploads to finish ({expected_gallery_count - len(missing_ids)}/{expected_gallery_count} received).",
+                    },
+                    status=409,
+                )
+
+            # The client order is authoritative. Extra server temp files can only be
+            # stale/removed uploads racing the X button; delete them before finalize.
+            selected_ids = set(gallery_order)
+            extra_paths = [path for image_id, path in secondary_by_id.items() if image_id not in selected_ids]
+            session_info["secondary_files_by_id"] = {image_id: secondary_by_id[image_id] for image_id in gallery_order}
+            for extra_path in extra_paths:
+                if extra_path and os.path.isfile(extra_path):
+                    try:
+                        os.remove(extra_path)
+                    except OSError:
+                        pass
+
+            secondary_paths = [secondary_by_id[image_id] for image_id in gallery_order]
+        else:
+            # V5.71 fallback: contiguous numeric upload order.
+            secondary_by_index = dict(session_info.get("secondary_files_by_index", {}))
+            if len(secondary_by_index) != expected_gallery_count:
+                return web.json_response(
+                    {
+                        "status": "error",
+                        "error": f"Please wait for all gallery uploads to finish ({len(secondary_by_index)}/{expected_gallery_count} received).",
+                    },
+                    status=409,
+                )
+            expected_indexes = list(range(expected_gallery_count))
+            if sorted(secondary_by_index) != expected_indexes:
+                return web.json_response(
+                    {"status": "error", "error": "Gallery upload order is incomplete. Please reopen the portal and retry."},
+                    status=409,
+                )
+            secondary_paths = [secondary_by_index[idx] for idx in expected_indexes]
 
         cover_path = session_info.get("cover_file")
-        secondary_paths = [secondary_by_index[idx] for idx in expected_indexes]
         session_info["secondary_files"] = list(secondary_paths)
         session_info["last_activity_at"] = utc_now()
 
@@ -3462,6 +3798,7 @@ async def start_web_server():
     app.router.add_get("/", ping_handler)
     app.router.add_get("/upload", handle_web_page)
     app.router.add_post("/api/upload_images_only", handle_upload_images_only)
+    app.router.add_post("/api/remove_gallery_image", handle_remove_gallery_image)
     app.router.add_post("/api/finalize_listing", handle_finalize_listing)
     app.router.add_post("/api/discord/exchange", handle_discord_exchange)
     app.router.add_post("/api/contact-seller", handle_contact_seller)
