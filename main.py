@@ -3935,6 +3935,25 @@ persistent_views_registered = False
 background_tasks_started = False
 slash_commands_synced = False
 
+
+async def restore_listing_state_after_startup():
+    """Restore durable listing controls without blocking the Bot/Portal startup path.
+
+    Discord can legitimately return a long 429 retry window for channel/message edits.
+    Those repairs are important, but they are not prerequisites for serving the Seller
+    Portal or bringing the rest of the bot online. Running them in this background task
+    prevents a single rate-limited Discord PATCH from freezing startup for a minute+.
+    """
+    try:
+        await restore_pending_review_views()
+    except Exception as e:
+        print(f"Pending review restoration error: {e}")
+    try:
+        await reconcile_resolved_listing_messages()
+    except Exception as e:
+        print(f"Resolved listing reconciliation error: {e}")
+
+
 @bot.event
 async def on_ready():
     global persistent_views_registered, background_tasks_started, slash_commands_synced
@@ -3942,6 +3961,10 @@ async def on_ready():
         await get_shared_http_session()
     except Exception as e:
         print(f"Shared HTTP session warm-up error: {e}")
+
+    # Register static persistent views synchronously, but never make Discord API repair
+    # calls part of the critical startup path. A 429 on a ticket PATCH must not delay
+    # the Seller Portal or the rest of the service.
     if not persistent_views_registered:
         bot.add_view(TicketLauncherView())
         bot.add_view(CloseTicketView())
@@ -3950,17 +3973,16 @@ async def on_ready():
         bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
         bot.add_view(ShopLaunchView())
         bot.add_view(PurchaseOfferActivityView())
-        try:
-            await restore_pending_review_views()
-            await reconcile_resolved_listing_messages()
-        except Exception as e:
-            print(f"Listing review/status reconciliation error: {e}")
         persistent_views_registered = True
+
     if not background_tasks_started:
+        # Start the web engine first so Seller Portal availability is independent from
+        # Discord repair/rate-limit delays.
         bot.loop.create_task(start_web_server())
         bot.loop.create_task(session_cleaner_task())
         bot.loop.create_task(seller_ticket_autoclose_task())
         bot.loop.create_task(animated_bot_nickname_task())
+        bot.loop.create_task(restore_listing_state_after_startup())
         background_tasks_started = True
     try:
         await ensure_shop_entry_message()
