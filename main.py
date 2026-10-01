@@ -2887,6 +2887,11 @@ HTML_PAGE = """<!DOCTYPE html>
             text-transform: uppercase; letter-spacing: 0.8px; box-shadow: 0 4px 25px rgba(245, 158, 11, 0.45);
         }
         .btn:disabled { background: #252631; color: #64748B; cursor: not-allowed; box-shadow: none; }
+        /* Final submission has no truthful percentage: animate the button until the server confirms. */
+        .btn.finalizing { position: relative; overflow: hidden; background: #252631; color: #E2E8F0; box-shadow: none; cursor: wait; padding-bottom: 21px; }
+        .btn.finalizing::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: linear-gradient(90deg, transparent 0%, #FFB800 45%, #F59E0B 60%, transparent 100%); background-size: 200% 100%; animation: submit-progress 1.5s linear infinite; }
+        @keyframes submit-progress { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+        @media (prefers-reduced-motion: reduce) { .btn.finalizing::after { animation: none; background: #FFB800; } }
     </style>
 </head>
 <body>
@@ -2962,6 +2967,7 @@ HTML_PAGE = """<!DOCTYPE html>
         const MAX_GALLERY_IMAGES = 40;
         const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
 
+        let isSubmittingListing = false;
         let coverFile = null;
         let secondaryFiles = []; // [{ id, file, previewUrl }], in the exact final Shop order.
         let isCoverUploaded = false;
@@ -3000,7 +3006,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const currentIds = currentGalleryIds();
             const allGalleryUploaded = currentIds.length > 0 && currentIds.every(id => uploadedGalleryIds.has(id));
             const hasCurrentFailure = currentIds.some(id => failedUploadKeys.has(`gallery:${id}`));
-            submitBtn.disabled = !(
+            submitBtn.disabled = isSubmittingListing || !(
                 coverFile &&
                 isCoverUploaded &&
                 !coverUploadPending &&
@@ -3336,7 +3342,7 @@ HTML_PAGE = """<!DOCTYPE html>
                     progressPercent.innerText = success ? "100%" : "0%";
                     progressText.innerText = success ? "✨ All Uploads Complete!" : "⚠️ Upload Error";
                     setTimeout(() => {
-                        if (!coverUploadPending && pendingGalleryIds.size === 0) progressBox.style.display = "none";
+                        if (!isSubmittingListing && !coverUploadPending && pendingGalleryIds.size === 0) progressBox.style.display = "none";
                     }, 800);
                 }
                 checkSubmitReady();
@@ -3367,6 +3373,7 @@ HTML_PAGE = """<!DOCTYPE html>
         }
 
         async function submitFinalListing() {
+            if (isSubmittingListing) return;
             const offerTitle = document.getElementById('offerTitle').value.trim();
             const price = document.getElementById('price').value.trim();
             const currency = document.getElementById('currency').value;
@@ -3394,19 +3401,14 @@ HTML_PAGE = """<!DOCTYPE html>
                 return;
             }
 
+            isSubmittingListing = true;
             const submitBtn = document.getElementById('submitBtn');
             submitBtn.disabled = true;
-            submitBtn.innerText = "⏳ Processing...";
+            submitBtn.classList.add('finalizing');
+            submitBtn.textContent = "⏳ PROCESSING — Sending to staff for approval. Please wait...";
 
-            const progressBox = document.getElementById('progressBox');
-            const progressBarFill = document.getElementById('progressBarFill');
-            const progressPercent = document.getElementById('progressPercent');
-            const progressText = document.getElementById('progressText');
-
-            progressBox.style.display = "block";
-            progressBarFill.style.width = "100%";
-            progressPercent.innerText = "100%";
-            progressText.innerText = "⚡ Dispatched to Discord Staff...";
+            // Image-upload progress is separate and must never reappear on Submit.
+            document.getElementById('progressBox').style.display = "none";
 
             const formData = new FormData();
             formData.append("session", session);
@@ -3425,13 +3427,17 @@ HTML_PAGE = """<!DOCTYPE html>
                     document.getElementById('formScreen').innerHTML = '<div style="text-align:center; padding: 40px;"><h2 style="color:#10B981">🎉 SUBMITTED SUCCESSFULLY!</h2><p style="color:#CBD5E1;">Your listing with all proofs has been sent to staff. You can close this window and return to Discord.</p></div>';
                 } else {
                     alert(json.error || "Submission failed.");
-                    submitBtn.disabled = false;
-                    submitBtn.innerText = "🚀 Submit Listing to Staff";
+                    isSubmittingListing = false;
+                    submitBtn.classList.remove('finalizing');
+                    submitBtn.textContent = "🚀 Submit Listing to Staff";
+                    checkSubmitReady();
                 }
             } catch (e) {
-                alert("Network error.");
-                submitBtn.disabled = false;
-                submitBtn.innerText = "🚀 Submit Listing to Staff";
+                alert("Network error. Check your ticket before retrying to avoid duplicate submissions.");
+                isSubmittingListing = false;
+                submitBtn.classList.remove('finalizing');
+                submitBtn.textContent = "🚀 Submit Listing to Staff";
+                checkSubmitReady();
             }
         }
     </script>
