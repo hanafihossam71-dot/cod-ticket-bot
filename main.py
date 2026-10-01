@@ -11,6 +11,7 @@ import uuid
 import re
 import hashlib
 import weakref
+import secrets
 import aiohttp
 from aiohttp import web
 from typing import Optional
@@ -41,12 +42,17 @@ SHOP_ENTRY_CHANNEL_ID = int(os.environ.get("SHOP_ENTRY_CHANNEL_ID", str(DEFAULT_
 SELLER_TICKET_CLOSE_DELAY_SECONDS = 24 * 60 * 60
 SELLER_PORTAL_ACTIVE_GRACE_SECONDS = 3600
 SELLER_TICKET_SCAN_INTERVAL_SECONDS = 15
+SELLER_PORTAL_SESSION_TTL_SECONDS = 2 * 60 * 60
+SELLER_PORTAL_RECOVERY_TTL_SECONDS = 24 * 60 * 60
+SELLER_PORTAL_MAX_GALLERY_IMAGES = 40
+SELLER_PORTAL_MAX_SOURCE_BYTES = 25 * 1024 * 1024
+SELLER_PORTAL_MAX_IMAGE_PIXELS = 40_000_000
 
 CRYPTO_ADDRESSES = {
-    "USDT_TRC20": "TYourTRC20AddressHereXXXXXXXXXXXXXX",
-    "USDT_BEP20": "0xYourBEP20AddressHereXXXXXXXXXXXXXX",
-    "LTC": "LYourLitecoinAddressHereXXXXXXXXXXXXXX",
-    "BTC": "bc1qYourBitcoinAddressHereXXXXXXXXXXXXXX"
+    "USDT_TRC20": os.environ.get("PAYMENT_USDT_TRC20", "").strip(),
+    "USDT_BEP20": os.environ.get("PAYMENT_USDT_BEP20", "").strip(),
+    "LTC": os.environ.get("PAYMENT_LTC", "").strip(),
+    "BTC": os.environ.get("PAYMENT_BTC", "").strip(),
 }
 # ======================================================================
 
@@ -63,6 +69,10 @@ class PedraoBot(commands.Bot):
             await super().close()
 
 bot = PedraoBot(command_prefix="!", intents=intents)
+
+
+def utc_now() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def dedupe_file_paths_by_content(paths: list[str]) -> list[str]:
@@ -145,14 +155,50 @@ def _encode_webp_under_limit(image: Image.Image, target_bytes: int, quality_step
         raise RuntimeError("Could not encode uploaded image.")
     return best_payload
 
+def validate_uploaded_image_file(source_path: str) -> str:
+    """Validate a Seller Portal upload by decoded image content, not file extension."""
+    if not source_path or not os.path.isfile(source_path):
+        raise RuntimeError("Uploaded image is missing from the server.")
+
+    source_size = os.path.getsize(source_path)
+    if source_size <= 0:
+        raise RuntimeError("Uploaded image is empty.")
+    if source_size > SELLER_PORTAL_MAX_SOURCE_BYTES:
+        raise RuntimeError("Image is too large. Maximum source upload size is 25 MB.")
+
+    try:
+        with Image.open(source_path) as opened:
+            opened.verify()
+        with Image.open(source_path) as opened:
+            image_format = str(opened.format or "").upper()
+            width, height = opened.size
+    except Exception as exc:
+        raise RuntimeError("Invalid or corrupted image file.") from exc
+
+    format_extensions = {"JPEG": ".jpg", "PNG": ".png", "WEBP": ".webp"}
+    canonical_ext = format_extensions.get(image_format)
+    if not canonical_ext:
+        raise RuntimeError("Unsupported image format. Use JPG, PNG, or WebP.")
+    if width <= 0 or height <= 0 or (width * height) > SELLER_PORTAL_MAX_IMAGE_PIXELS:
+        raise RuntimeError("Image dimensions are too large. Maximum decoded size is 40 megapixels.")
+
+    current_ext = os.path.splitext(source_path)[1].lower()
+    if current_ext == ".jpeg":
+        current_ext = ".jpg"
+    if current_ext != canonical_ext:
+        renamed_path = os.path.splitext(source_path)[0] + canonical_ext
+        os.replace(source_path, renamed_path)
+        source_path = renamed_path
+    return source_path
+
+
 def optimize_uploaded_image_file(source_path: str) -> str:
     """Normalize oversized Seller Portal uploads to <=1.90 MiB whenever possible.
 
-    Files already at or under the target are preserved byte-for-byte. Oversized files
-    are converted to high-quality WebP; resolution is reduced only when required.
+    Files already at or under the target are preserved byte-for-byte after validation.
+    Oversized files are converted to high-quality WebP; resolution is reduced only when required.
     """
-    if not source_path or not os.path.isfile(source_path):
-        raise RuntimeError("Uploaded image is missing from the server.")
+    source_path = validate_uploaded_image_file(source_path)
     if os.path.getsize(source_path) <= SHOP_IMAGE_TARGET_BYTES:
         return source_path
 
@@ -325,23 +371,38 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
             print(f"Supabase listing rollback error for {listing_id}: {cleanup_error}")
         raise
 
-async def set_listing_status(listing_id: str, status: str):
+async def set_listing_status(listing_id: str, status: str, *, expected_status: str | None = None, rejection_reason: str | None = None):
+    """Atomically transition a listing, optionally only from one expected status."""
     if not listing_id:
-        return
+        raise RuntimeError("Listing ID is required.")
 
     update_data = {"status": status}
-    now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    now_iso = utc_now().isoformat()
     if status == "PUBLISHED":
         update_data["published_at"] = now_iso
+        update_data["rejection_reason"] = None
+        update_data["review_image_urls"] = []
+    elif status == "REJECTED":
+        update_data["rejection_reason"] = (rejection_reason or "").strip()[:500] or None
+        update_data["review_image_urls"] = []
     elif status == "SOLD":
         update_data["sold_at"] = now_iso
 
+    status_filter = f"&status=eq.{expected_status}" if expected_status else ""
     rows = await supabase_request(
-        "PATCH", f"/rest/v1/listings?id=eq.{listing_id}",
+        "PATCH",
+        f"/rest/v1/listings?id=eq.{listing_id}{status_filter}",
         json_data=update_data,
     )
     if not isinstance(rows, list) or not rows:
+        if expected_status:
+            current = await fetch_listing_by_id(listing_id)
+            current_status = current.get("status") if current else "missing"
+            raise RuntimeError(
+                f"Listing status changed before this action completed (expected {expected_status}, found {current_status})."
+            )
         raise RuntimeError("No matching listing was updated in Supabase.")
+    return rows[0]
 
 async def fetch_listing_by_offer_number(offer_number: int, *, published_only: bool = False):
     status_filter = "&status=eq.PUBLISHED" if published_only else ""
@@ -596,6 +657,149 @@ async def persist_seller_status_message_id(listing_id: str, message_id: int):
     except Exception as e:
         # Keep listing workflows working even if an older database has not received the V5.62 column yet.
         print(f"Seller status message persistence warning for {listing_id}: {e}")
+
+
+async def persist_staff_review_context(listing_id: str, message_id: int, image_urls: list[str]):
+    if not listing_id or not message_id:
+        raise RuntimeError("Missing listing or staff review message ID.")
+    await supabase_request(
+        "PATCH",
+        f"/rest/v1/listings?id=eq.{listing_id}&status=eq.PENDING_REVIEW",
+        json_data={
+            "staff_review_message_id": int(message_id),
+            "review_image_urls": [str(url) for url in image_urls if url],
+        },
+    )
+
+
+async def fetch_pending_review_contexts():
+    select_fields = (
+        "id,offer_number,title,price,currency,description,status,categories,"
+        "seller_discord_id,seller_ticket_channel_id,seller_status_message_id,"
+        "staff_review_message_id,review_image_urls"
+    )
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/listings?status=eq.PENDING_REVIEW&staff_review_message_id=not.is.null&select={select_fields}&order=created_at.asc",
+    )
+    return rows if isinstance(rows, list) else []
+
+
+async def fetch_listing_storage_paths(listing_id: str) -> list[str]:
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/listing_images?listing_id=eq.{listing_id}&select=image_url,sort_order,created_at&order=sort_order.asc,created_at.asc",
+    )
+    if not isinstance(rows, list):
+        return []
+    return [str(row.get("image_url")) for row in rows if row.get("image_url")]
+
+
+async def create_storage_signed_urls(paths: list[str], expires_in: int = 6 * 60 * 60) -> list[str]:
+    """Create fresh durable review URLs from the private Supabase bucket."""
+    unique_paths = list(dict.fromkeys(str(path) for path in paths if path))
+    if not unique_paths:
+        return []
+    rows = await supabase_request(
+        "POST",
+        "/storage/v1/object/sign/listing-images",
+        json_data={"expiresIn": int(expires_in), "paths": unique_paths},
+    )
+    if not isinstance(rows, list):
+        return []
+
+    urls: list[str] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        raw_url = row.get("signedUrl") or row.get("signedURL")
+        if not raw_url:
+            continue
+        raw_url = str(raw_url)
+        if raw_url.startswith("http://") or raw_url.startswith("https://"):
+            urls.append(raw_url)
+        else:
+            normalized = raw_url if raw_url.startswith("/") else f"/{raw_url}"
+            urls.append(f"{SUPABASE_URL}/storage/v1{normalized}")
+    return urls
+
+
+async def fetch_fresh_review_image_urls(listing_id: str) -> list[str]:
+    paths = await fetch_listing_storage_paths(listing_id)
+    if not paths:
+        return []
+    return await create_storage_signed_urls(paths)
+
+
+async def fetch_resolved_review_contexts():
+    select_fields = (
+        "id,offer_number,title,price,currency,status,categories,rejection_reason,"
+        "seller_discord_id,seller_ticket_channel_id,seller_status_message_id,staff_review_message_id"
+    )
+    rows = await supabase_request(
+        "GET",
+        f"/rest/v1/listings?status=in.(PUBLISHED,REJECTED,SOLD)&staff_review_message_id=not.is.null&select={select_fields}&order=updated_at.desc",
+    )
+    return rows if isinstance(rows, list) else []
+
+
+async def reconcile_resolved_listing_messages():
+    """Repair Discord review/seller cards if a restart happened mid-transition."""
+    review_channel = bot.get_channel(REVIEW_CHANNEL_ID)
+    if not isinstance(review_channel, discord.TextChannel):
+        return 0
+
+    rows = await fetch_resolved_review_contexts()
+    repaired = 0
+    for row in rows:
+        status = str(row.get("status") or "").upper()
+        offer_number = int(row.get("offer_number") or 0)
+        offer_id = format_offer_id(offer_number)
+
+        review_message_id = row.get("staff_review_message_id")
+        if review_message_id:
+            try:
+                review_message = await review_channel.fetch_message(int(review_message_id))
+                review_content = {
+                    "PUBLISHED": "✅ **Listing approved and published to Accounts Shop!**",
+                    "REJECTED": "❌ **Listing was rejected by staff.**",
+                    "SOLD": "⛔ **Listing is sold / no longer available.**",
+                }.get(status, "✅ **Listing review resolved.**")
+                await review_message.edit(content=review_content, view=None)
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        ticket_channel_id = row.get("seller_ticket_channel_id")
+        seller_status_message_id = row.get("seller_status_message_id")
+        if ticket_channel_id and seller_status_message_id:
+            ticket_channel = review_channel.guild.get_channel(int(ticket_channel_id))
+            if isinstance(ticket_channel, discord.TextChannel):
+                try:
+                    seller_message = await ticket_channel.fetch_message(int(seller_status_message_id))
+                    seller_id = row.get("seller_discord_id")
+                    seller_mention = f"<@{seller_id}>" if seller_id else "Seller"
+                    seller_embed = build_seller_status_embed(
+                        status=status,
+                        seller_mention=seller_mention,
+                        offer_id=offer_id,
+                        offer_title=str(row.get("title") or "Untitled Offer"),
+                        price_str=format_listing_price(row),
+                        highlights=_format_status_highlights(row.get("categories")),
+                        screenshots="Uploaded proofs",
+                        reason=row.get("rejection_reason"),
+                    )
+                    await seller_message.edit(embed=seller_embed, view=None)
+                    if seller_id:
+                        await schedule_seller_ticket_close_if_idle(ticket_channel, int(seller_id))
+                except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+                    print(f"Resolved seller-card reconcile warning for {offer_id}: {exc}")
+                except Exception as exc:
+                    print(f"Resolved seller-ticket state reconcile warning for {offer_id}: {exc}")
+        repaired += 1
+
+    if repaired:
+        print(f"✅ Reconciled {repaired} resolved listing review/status record(s).")
+    return repaired
 
 
 async def fetch_listing_status_context(offer_number: int):
@@ -1063,7 +1267,7 @@ async def archive_and_delete_ticket(channel: discord.TextChannel, closed_by, *, 
     log_text += f"Ticket Name: {channel.name}\n"
     log_text += f"Closed by: {closed_by} ({getattr(closed_by, 'id', 'system')})\n"
     log_text += f"Reason: {reason}\n"
-    log_text += f"Closed At: {datetime.datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+    log_text += f"Closed At: {utc_now().strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
     log_text += "====================================\n\n"
 
     try:
@@ -1084,7 +1288,7 @@ async def archive_and_delete_ticket(channel: discord.TextChannel, closed_by, *, 
                 title="📑 TICKET CLOSED & ARCHIVED",
                 description=f"Ticket **#{channel.name}** was archived.",
                 color=0xEF4444,
-                timestamp=datetime.datetime.utcnow(),
+                timestamp=utc_now(),
             )
             mention = getattr(closed_by, "mention", str(closed_by))
             log_embed.add_field(name="Closed By", value=mention, inline=True)
@@ -1114,6 +1318,35 @@ def get_purchase_ticket_lock(buyer_id: int) -> asyncio.Lock:
 os.makedirs("uploaded_screenshots", exist_ok=True)
 active_web_sessions = {}
 
+
+def cleanup_session_files(session_info: dict | None):
+    if not session_info:
+        return
+    paths = set()
+    cover = session_info.get("cover_file")
+    if cover:
+        paths.add(str(cover))
+    for path in session_info.get("secondary_files", []) or []:
+        if path:
+            paths.add(str(path))
+    for path in (session_info.get("secondary_files_by_index", {}) or {}).values():
+        if path:
+            paths.add(str(path))
+    for path in session_info.get("all_paths", []) or []:
+        if path:
+            paths.add(str(path))
+    for path in paths:
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def new_seller_portal_session_id() -> str:
+    return secrets.token_urlsafe(24)
+
+
 def build_seller_portal_welcome_embed(seller) -> discord.Embed:
     embed = discord.Embed(
         title="⚡ CALL OF DUTY | SELLER VERIFICATION PORTAL",
@@ -1134,14 +1367,25 @@ def build_seller_portal_welcome_embed(seller) -> discord.Embed:
     return embed
 
 def register_seller_portal_session(seller_id: int, channel_id: int, launcher_msg: discord.Message, *, session_id: Optional[str] = None) -> str:
-    session_id = session_id or str(uuid.uuid4())[:8]
+    # One active portal session per seller room. Invalidate stale links and clean their temp files.
+    for sid, data in list(active_web_sessions.items()):
+        if int(data.get("channel_id", 0) or 0) == int(channel_id):
+            cleanup_session_files(data)
+            active_web_sessions.pop(sid, None)
+
+    session_id = session_id or new_seller_portal_session_id()
+    now = utc_now()
     active_web_sessions[session_id] = {
         "seller_id": int(seller_id),
         "channel_id": int(channel_id),
         "launcher_msg": launcher_msg,
-        "created_at": datetime.datetime.utcnow(),
+        "created_at": now,
+        "last_activity_at": now,
         "cover_file": None,
+        "cover_version": 0,
         "secondary_files": [],
+        "secondary_files_by_index": {},
+        "upload_lock": asyncio.Lock(),
         "finalize_lock": asyncio.Lock(),
         "listing_id": None,
         "all_paths": None,
@@ -1250,7 +1494,7 @@ async def schedule_seller_ticket_close_if_idle(channel: discord.TextChannel, sel
     return True
 
 async def rotate_seller_portal_session(channel: discord.TextChannel, seller, launcher_msg: discord.Message) -> discord.Message:
-    session_id = str(uuid.uuid4())[:8]
+    session_id = new_seller_portal_session_id()
     view = DirectPortalLauncherView(session_id=session_id)
     try:
         await launcher_msg.edit(embed=build_seller_portal_welcome_embed(seller), view=view)
@@ -1680,11 +1924,13 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
         self.add_item(self.reason_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_member(interaction.user):
+            return await interaction.response.send_message("❌ This action is restricted to staff.", ephemeral=True)
         if not await allow_single_interaction(interaction, f"reject_submit:{self.listing_id}", cooldown=30.0):
             return
         reason = self.reason_input.value.strip()
         try:
-            await set_listing_status(self.listing_id, "REJECTED")
+            await set_listing_status(self.listing_id, "REJECTED", expected_status="PENDING_REVIEW", rejection_reason=reason)
         except Exception as e:
             return await interaction.response.send_message(f"❌ Could not update listing status in Supabase: `{e}`", ephemeral=True)
         if self.approval_view and self.review_message:
@@ -1770,56 +2016,19 @@ class MarketplaceCarouselView(View):
             self.update_buttons()
             await interaction.response.edit_message(embed=self.embed_data, view=self)
 
-    @discord.ui.button(label="Buy This Account", style=discord.ButtonStyle.success, emoji="⚡", custom_id="buy_account_direct_btn", row=1)
+    @discord.ui.button(label="Use Accounts Shop", style=discord.ButtonStyle.primary, emoji="🛒", custom_id="buy_account_direct_btn", row=1)
     async def buy_btn(self, interaction: discord.Interaction, button: Button):
-        if not await allow_single_interaction(interaction, "legacy_buy_account", cooldown=12.0):
+        if not await allow_single_interaction(interaction, "legacy_buy_account", cooldown=8.0):
             return
         if self.is_sold:
             return await interaction.response.send_message("❌ This account has already been sold.", ephemeral=True)
 
-        guild = interaction.guild
-        category = guild.get_channel(TICKET_CATEGORY_ID)
-        support_role = guild.get_role(SUPPORT_ROLE_ID)
-
-        clean_user_name = interaction.user.name.lower().replace(" ", "-")
-        channel_name = f"🛒・buy-acc-{clean_user_name}"
-
-        existing = discord.utils.get(category.text_channels, name=channel_name)
-        if existing:
-            return await interaction.response.send_message(f"⚠️ You already have an open buying ticket: {existing.mention}", ephemeral=True)
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True, embed_links=True),
-            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True)
-        }
-        if support_role:
-            overwrites[support_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, attach_files=True)
-
-        buy_ticket_channel = await guild.create_text_channel(name=channel_name, category=category, overwrites=overwrites)
-        price_field = next((f.value for f in self.embed_data.fields if "Asking Price" in f.name), "Check listing")
-
-        buy_embed = discord.Embed(
-            title="🛒 ACCOUNT PURCHASE ORDER",
-            description=(
-                f"Welcome {interaction.user.mention}!\n"
-                "You opened this ticket to purchase this verified Call of Duty account:\n\n"
-                f"💰 **Price:** {price_field}\n\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                "💳 **Payment Methods:** `Crypto Only` (USDT / LTC / BTC)\n"
-                "⚡ Type `!pay` to view our official payment addresses.\n"
-                "🛡️ An admin will join shortly to facilitate the safe escrow transfer."
-            ),
-            color=0xF59E0B,
-            timestamp=datetime.datetime.utcnow()
+        shop_channel = interaction.guild.get_channel(SHOP_ENTRY_CHANNEL_ID) if interaction.guild else None
+        destination = shop_channel.mention if isinstance(shop_channel, discord.TextChannel) else "the official Accounts Shop channel"
+        await interaction.response.send_message(
+            f"ℹ️ This legacy marketplace purchase flow is retired. Please open {destination} and use **Contact Seller** from the Accounts Shop.",
+            ephemeral=True,
         )
-        if self.images:
-            buy_embed.set_thumbnail(url=self.images[0])
-        buy_embed.set_footer(text="Pedrao22k Escrow • Fast & Secure Delivery")
-
-        role_ping = support_role.mention if support_role else ""
-        await buy_ticket_channel.send(content=f"{interaction.user.mention} {role_ping}", embed=buy_embed, view=CloseTicketView())
-        await interaction.response.send_message(f"✅ Purchase ticket created! Proceed here: {buy_ticket_channel.mention}", ephemeral=True)
 
 class AdminApprovalView(View):
     def __init__(self, seller: discord.User, embed_data: discord.Embed, ticket_channel: discord.TextChannel, images: list, launcher_msg: discord.Message = None, offer_title: str = "", price_num: str = "", currency: str = "USD", items_list: str = "None", description: str = "", count_str: str = "", listing_id: str = ""):
@@ -1839,6 +2048,14 @@ class AdminApprovalView(View):
         self.current_index = 0
         self.posted_market_message = None
         self.created_thread = None
+
+        # Deterministic component IDs make this view restorable after a Railway restart.
+        review_key = str(listing_id or "unknown")
+        self.prev_img.custom_id = f"review:{review_key}:prev"
+        self.counter_btn.custom_id = f"review:{review_key}:count"
+        self.next_img.custom_id = f"review:{review_key}:next"
+        self.approve.custom_id = f"review:{review_key}:approve"
+        self.reject.custom_id = f"review:{review_key}:reject"
         self.update_carousel()
 
     def update_carousel(self):
@@ -1873,11 +2090,13 @@ class AdminApprovalView(View):
 
     @discord.ui.button(label="Approve & Publish to Shop", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def approve(self, interaction: discord.Interaction, button: Button):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_member(interaction.user):
+            return await interaction.response.send_message("❌ This action is restricted to staff.", ephemeral=True)
         if not await allow_single_interaction(interaction, f"approve_listing:{self.listing_id}", cooldown=30.0):
             return
         await interaction.response.defer(ephemeral=True)
         try:
-            await set_listing_status(self.listing_id, "PUBLISHED")
+            await set_listing_status(self.listing_id, "PUBLISHED", expected_status="PENDING_REVIEW")
             published_listing = await fetch_listing_by_id(self.listing_id, published_only=True)
             if not published_listing or published_listing.get("offer_number") is None:
                 raise RuntimeError("Published listing was not returned with an offer number.")
@@ -1924,6 +2143,8 @@ class AdminApprovalView(View):
 
     @discord.ui.button(label="Reject Listing", style=discord.ButtonStyle.danger, emoji="❌", row=1)
     async def reject(self, interaction: discord.Interaction, button: Button):
+        if not isinstance(interaction.user, discord.Member) or not is_staff_member(interaction.user):
+            return await interaction.response.send_message("❌ This action is restricted to staff.", ephemeral=True)
         if not await allow_single_interaction(interaction, f"reject_listing:{self.listing_id}", cooldown=8.0):
             return
         modal = RejectReasonModal(
@@ -1939,6 +2160,92 @@ class AdminApprovalView(View):
             approval_view=self
         )
         await interaction.response.send_modal(modal)
+
+
+async def restore_pending_review_views():
+    """Restore PENDING_REVIEW staff controls after a bot/Railway restart."""
+    review_channel = bot.get_channel(REVIEW_CHANNEL_ID)
+    if not isinstance(review_channel, discord.TextChannel):
+        print("Pending review restore skipped: staff review channel unavailable.")
+        return 0
+
+    rows = await fetch_pending_review_contexts()
+    restored = 0
+    for row in rows:
+        message_id = row.get("staff_review_message_id")
+        ticket_channel_id = row.get("seller_ticket_channel_id")
+        seller_id = row.get("seller_discord_id")
+        if not message_id or not ticket_channel_id or not seller_id:
+            continue
+
+        try:
+            review_message = await review_channel.fetch_message(int(message_id))
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException) as exc:
+            print(f"Pending review message restore warning for {row.get('offer_number')}: {exc}")
+            continue
+
+        ticket_channel = review_channel.guild.get_channel(int(ticket_channel_id))
+        if not isinstance(ticket_channel, discord.TextChannel):
+            continue
+
+        seller = review_channel.guild.get_member(int(seller_id))
+        if seller is None:
+            try:
+                seller = await bot.fetch_user(int(seller_id))
+            except Exception as exc:
+                print(f"Pending review seller restore warning for {row.get('offer_number')}: {exc}")
+                continue
+
+        launcher_msg = None
+        seller_status_message_id = row.get("seller_status_message_id")
+        if seller_status_message_id:
+            try:
+                launcher_msg = await ticket_channel.fetch_message(int(seller_status_message_id))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                launcher_msg = None
+
+        try:
+            images = await fetch_fresh_review_image_urls(str(row["id"]))
+        except Exception as exc:
+            print(f"Pending review image refresh warning for {row.get('offer_number')}: {exc}")
+            images = []
+        if not images:
+            images = [str(url) for url in (row.get("review_image_urls") or []) if url]
+        if not images and review_message.embeds and review_message.embeds[0].image.url:
+            images = [review_message.embeds[0].image.url]
+
+        if review_message.embeds:
+            embed_data = discord.Embed.from_dict(review_message.embeds[0].to_dict())
+        else:
+            embed_data = discord.Embed(
+                title=f"📥 {format_offer_id(int(row['offer_number']))} — {row.get('title') or 'Untitled Offer'}",
+                color=0xF59E0B,
+            )
+
+        view = AdminApprovalView(
+            seller=seller,
+            embed_data=embed_data,
+            ticket_channel=ticket_channel,
+            images=images,
+            launcher_msg=launcher_msg,
+            offer_title=str(row.get("title") or "Untitled Offer"),
+            price_num=str(row.get("price") or "0"),
+            currency=str(row.get("currency") or "USD"),
+            items_list=_format_status_highlights(row.get("categories")),
+            description=str(row.get("description") or ""),
+            count_str=(f"{len(images)} proofs" if images else "Uploaded proofs"),
+            listing_id=str(row["id"]),
+        )
+        bot.add_view(view, message_id=int(message_id))
+        try:
+            await review_message.edit(view=view)
+        except (discord.Forbidden, discord.HTTPException) as exc:
+            print(f"Pending review view refresh warning for {row.get('offer_number')}: {exc}")
+        restored += 1
+
+    if restored:
+        print(f"✅ Restored {restored} pending staff review view(s) after restart.")
+    return restored
 
 
 class SoldConfirmationView(View):
@@ -1965,7 +2272,12 @@ class SoldConfirmationView(View):
                 return await interaction.followup.send(f"❌ Account {format_offer_id(offer_number)} was not found.", ephemeral=True)
             if current.get("status") == "SOLD":
                 return await interaction.followup.send(f"⚠️ Account {format_offer_id(offer_number)} is already marked as sold.", ephemeral=True)
-            await set_listing_status(listing_id, "SOLD")
+            if current.get("status") != "PUBLISHED":
+                return await interaction.followup.send(
+                    f"❌ Only a published offer can be marked as sold. Current status: `{current.get('status')}`.",
+                    ephemeral=True,
+                )
+            await set_listing_status(listing_id, "SOLD", expected_status="PUBLISHED")
             await update_seller_status_card_for_sold(interaction.guild, offer_number)
         except Exception as e:
             return await interaction.followup.send(f"❌ Could not mark {format_offer_id(offer_number)} as sold: `{e}`", ephemeral=True)
@@ -1977,7 +2289,7 @@ class SoldConfirmationView(View):
                 "If you're interested in another account, return to the Accounts Shop and select a different offer."
             ),
             color=0xEF4444,
-            timestamp=datetime.datetime.utcnow(),
+            timestamp=utc_now(),
         )
         sold_embed.set_footer(text="Pedrao22k Accounts Shop")
 
@@ -2128,7 +2440,7 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
                     + ("\n\nThis ticket was created from the Accounts Shop." if created_ticket else "")
                 ),
                 color=0xF59E0B,
-                timestamp=datetime.datetime.utcnow(),
+                timestamp=utc_now(),
             )
             embed.set_footer(text="Pedrao22k Accounts Shop")
             support_role = guild.get_role(SUPPORT_ROLE_ID)
@@ -2314,7 +2626,7 @@ class MarketplaceLauncherView(View):
             overwrites=overwrites,
             topic=seller_ticket_topic(interaction.user.id),
         )
-        session_id = str(uuid.uuid4())[:8]
+        session_id = new_seller_portal_session_id()
         role_ping = support_role.mention if support_role else ""
         launcher_msg = await sell_ticket_channel.send(
             content=f"{interaction.user.mention} {role_ping}",
@@ -2484,9 +2796,16 @@ HTML_PAGE = """<!DOCTYPE html>
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const session = urlParams.get('session');
+        const MAX_GALLERY_IMAGES = 40;
+        const MAX_SOURCE_BYTES = 25 * 1024 * 1024;
+
         let coverFile = null;
         let secondaryFiles = [];
         let isCoverUploaded = false;
+        let coverSelectionVersion = 0;
+        let pendingUploads = 0;
+        const failedUploadKeys = new Set();
+        const uploadedSecondaryIndexes = new Set();
 
         function toggleSelectAll(btn) {
             const checkboxes = document.querySelectorAll('input[name="accountItem"]');
@@ -2497,23 +2816,43 @@ HTML_PAGE = """<!DOCTYPE html>
 
         function checkSubmitReady() {
             const submitBtn = document.getElementById('submitBtn');
-            if (coverFile && secondaryFiles.length > 0 && isCoverUploaded) {
-                submitBtn.disabled = false;
-            } else {
-                submitBtn.disabled = true;
-            }
+            const allGalleryUploaded = secondaryFiles.length > 0 && uploadedSecondaryIndexes.size === secondaryFiles.length;
+            submitBtn.disabled = !(
+                coverFile &&
+                isCoverUploaded &&
+                allGalleryUploaded &&
+                pendingUploads === 0 &&
+                failedUploadKeys.size === 0
+            );
+        }
+
+        function validateBrowserFile(file) {
+            if (!file) return "No file selected.";
+            if (!file.type.startsWith('image/')) return "Only image files are allowed.";
+            if (file.size > MAX_SOURCE_BYTES) return "Each source image must be 25 MB or smaller.";
+            return null;
         }
 
         function handleCoverSelection(file) {
-            if (!file || !file.type.startsWith('image/')) return;
+            const error = validateBrowserFile(file);
+            if (error) {
+                alert(error);
+                return;
+            }
+
+            coverSelectionVersion += 1;
+            const thisVersion = coverSelectionVersion;
             coverFile = file;
-            
+            isCoverUploaded = false;
+            failedUploadKeys.delete("cover");
+
             const grid = document.getElementById('coverPreview');
             grid.innerHTML = `<div class="preview-item"><img src="${URL.createObjectURL(file)}"></div>`;
             document.getElementById('coverText').innerText = `✨ Cover Loaded: ${file.name}`;
             document.getElementById('coverText').style.color = '#FFB800';
 
-            uploadImagesDirectly(file, true);
+            checkSubmitReady();
+            uploadImagesDirectly(file, true, null, thisVersion);
         }
 
         function fileFingerprint(file) {
@@ -2525,20 +2864,33 @@ HTML_PAGE = """<!DOCTYPE html>
             const coverFingerprint = coverFile ? fileFingerprint(coverFile) : null;
             const accepted = [];
             let skipped = 0;
+            let rejectedTooLarge = 0;
 
             for (let i = 0; i < files.length; i++) {
+                if (secondaryFiles.length >= MAX_GALLERY_IMAGES) {
+                    skipped += (files.length - i);
+                    break;
+                }
+
                 const file = files[i];
-                if (!file.type.startsWith('image/')) continue;
+                const validationError = validateBrowserFile(file);
+                if (validationError) {
+                    if (file && file.size > MAX_SOURCE_BYTES) rejectedTooLarge += 1;
+                    else skipped += 1;
+                    continue;
+                }
+
                 const fingerprint = fileFingerprint(file);
                 if (fingerprint === coverFingerprint || existing.has(fingerprint)) {
                     skipped += 1;
                     continue;
                 }
+
                 existing.add(fingerprint);
+                const orderIndex = secondaryFiles.length;
                 secondaryFiles.push(file);
-                accepted.push(file);
+                accepted.push({ file, orderIndex });
             }
-            if (secondaryFiles.length === 0) return;
 
             const grid = document.getElementById('secondaryPreview');
             grid.innerHTML = '';
@@ -2549,23 +2901,36 @@ HTML_PAGE = """<!DOCTYPE html>
                 grid.appendChild(item);
             });
 
-            document.getElementById('secondaryText').innerText = skipped > 0
-                ? `✨ ${secondaryFiles.length} Gallery Screenshots Loaded • ${skipped} Duplicate Skipped`
-                : `✨ ${secondaryFiles.length} Gallery Screenshots Loaded`;
-            document.getElementById('secondaryText').style.color = '#FFB800';
+            if (secondaryFiles.length > 0) {
+                let suffix = '';
+                if (skipped > 0) suffix += ` • ${skipped} Skipped`;
+                if (rejectedTooLarge > 0) suffix += ` • ${rejectedTooLarge} Over 25 MB`;
+                document.getElementById('secondaryText').innerText =
+                    `✨ ${secondaryFiles.length}/${MAX_GALLERY_IMAGES} Gallery Screenshots Loaded${suffix}`;
+                document.getElementById('secondaryText').style.color = '#FFB800';
+            }
 
-            accepted.forEach(file => uploadImagesDirectly(file, false));
+            accepted.forEach(({ file, orderIndex }) => uploadImagesDirectly(file, false, orderIndex, null));
+            checkSubmitReady();
         }
 
-        function uploadImagesDirectly(file, isCover) {
+        function uploadImagesDirectly(file, isCover, orderIndex, coverVersion) {
             if (!session) {
                 alert("Session missing. Please reopen from Discord ticket.");
                 return;
             }
 
+            const uploadKey = isCover ? "cover" : `gallery:${orderIndex}`;
+            pendingUploads += 1;
+            failedUploadKeys.delete(uploadKey);
+            if (!isCover) uploadedSecondaryIndexes.delete(orderIndex);
+            checkSubmitReady();
+
             const formData = new FormData();
             formData.append("session", session);
             formData.append("is_cover", isCover ? "1" : "0");
+            if (!isCover) formData.append("order_index", String(orderIndex));
+            if (isCover) formData.append("cover_version", String(coverVersion || 0));
             formData.append("files", file);
 
             const progressBox = document.getElementById('progressBox');
@@ -2589,26 +2954,51 @@ HTML_PAGE = """<!DOCTYPE html>
                 }
             };
 
+            const finish = (success, message) => {
+                pendingUploads = Math.max(0, pendingUploads - 1);
+
+                if (success) {
+                    failedUploadKeys.delete(uploadKey);
+                    if (isCover) {
+                        if (coverVersion === coverSelectionVersion) isCoverUploaded = true;
+                    } else {
+                        uploadedSecondaryIndexes.add(orderIndex);
+                    }
+                } else {
+                    failedUploadKeys.add(uploadKey);
+                    if (isCover && coverVersion === coverSelectionVersion) isCoverUploaded = false;
+                    if (!isCover) uploadedSecondaryIndexes.delete(orderIndex);
+                    if (message) alert(message);
+                }
+
+                if (pendingUploads === 0) {
+                    progressBarFill.style.width = success ? "100%" : "0%";
+                    progressPercent.innerText = success ? "100%" : "0%";
+                    progressText.innerText = success ? "✨ All Uploads Complete!" : "⚠️ Upload Error";
+                    setTimeout(() => {
+                        if (pendingUploads === 0) progressBox.style.display = "none";
+                    }, 800);
+                }
+                checkSubmitReady();
+            };
+
             xhr.onload = function() {
                 try {
                     const res = JSON.parse(xhr.responseText);
                     if (xhr.status === 200 && res.status === "ok") {
-                        progressBarFill.style.width = "100%";
-                        progressPercent.innerText = "100%";
-                        progressText.innerText = "✨ Upload Complete!";
-                        if (isCover) isCoverUploaded = true;
-                        checkSubmitReady();
-
-                        setTimeout(() => {
-                            progressBox.style.display = "none";
-                        }, 800);
+                        finish(true);
                     } else {
-                        alert(res.error || "Upload failed.");
+                        finish(false, res.error || "Upload failed.");
                     }
                 } catch (e) {
-                    alert("Server error.");
+                    finish(false, "Server error.");
                 }
             };
+
+            xhr.onerror = function() {
+                finish(false, "Network error while uploading image.");
+            };
+
             xhr.send(formData);
         }
 
@@ -2628,6 +3018,14 @@ HTML_PAGE = """<!DOCTYPE html>
                 alert("Please fill in all fields, upload primary cover, and at least one gallery image.");
                 return;
             }
+            if (pendingUploads > 0) {
+                alert("Please wait for all images to finish uploading.");
+                return;
+            }
+            if (!isCoverUploaded || uploadedSecondaryIndexes.size !== secondaryFiles.length || failedUploadKeys.size > 0) {
+                alert("One or more images have not uploaded successfully. Please reopen the portal and retry.");
+                return;
+            }
 
             const submitBtn = document.getElementById('submitBtn');
             submitBtn.disabled = true;
@@ -2637,7 +3035,7 @@ HTML_PAGE = """<!DOCTYPE html>
             const progressBarFill = document.getElementById('progressBarFill');
             const progressPercent = document.getElementById('progressPercent');
             const progressText = document.getElementById('progressText');
-            
+
             progressBox.style.display = "block";
             progressBarFill.style.width = "100%";
             progressPercent.innerText = "100%";
@@ -2650,6 +3048,7 @@ HTML_PAGE = """<!DOCTYPE html>
             formData.append("currency", currency);
             formData.append("items", itemsString);
             formData.append("description", desc);
+            formData.append("expectedGalleryCount", String(secondaryFiles.length));
 
             try {
                 const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
@@ -2679,6 +3078,7 @@ async def handle_web_page(request):
     session_id = str(request.query.get("session", "")).strip()
     session_info = active_web_sessions.get(session_id)
     if session_info and not session_info.get("finalized"):
+        session_info["last_activity_at"] = utc_now()
         channel = bot.get_channel(int(session_info.get("channel_id", 0) or 0))
         if isinstance(channel, discord.TextChannel):
             meta = parse_seller_ticket_topic(channel.topic)
@@ -2699,54 +3099,111 @@ async def handle_web_page(request):
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
 async def handle_upload_images_only(request):
+    saved_path = None
     try:
         reader = await request.multipart()
         session_id = None
         is_cover = "0"
-        saved_path = None
+        order_index = None
+        cover_version = 0
+        raw_file_path = None
 
         while True:
             part = await reader.next()
             if part is None:
                 break
+
             if part.name == "session":
-                session_id = (await part.read()).decode('utf-8')
+                session_id = (await part.read()).decode("utf-8").strip()
             elif part.name == "is_cover":
-                is_cover = (await part.read()).decode('utf-8')
+                is_cover = (await part.read()).decode("utf-8").strip()
+            elif part.name == "order_index":
+                raw_index = (await part.read()).decode("utf-8").strip()
+                order_index = int(raw_index) if raw_index else None
+            elif part.name == "cover_version":
+                raw_version = (await part.read()).decode("utf-8").strip()
+                cover_version = int(raw_version or 0)
             elif part.name == "files":
                 filename = part.filename
-                if filename:
-                    ext = os.path.splitext(filename)[1].lower()
-                    clean_name = f"{uuid.uuid4().hex}{ext}"
-                    file_path = os.path.join("uploaded_screenshots", clean_name)
-                    with open(file_path, "wb") as f:
-                        while True:
-                            chunk = await part.read_chunk()
-                            if not chunk:
-                                break
-                            f.write(chunk)
-                    try:
-                        saved_path = await asyncio.to_thread(optimize_uploaded_image_file, file_path)
-                    except Exception:
-                        try:
-                            os.remove(file_path)
-                        except OSError:
-                            pass
-                        raise
+                if not filename:
+                    continue
 
-        if not session_id or session_id not in active_web_sessions:
+                clean_name = f"{uuid.uuid4().hex}.upload"
+                raw_file_path = os.path.join("uploaded_screenshots", clean_name)
+                bytes_written = 0
+                with open(raw_file_path, "wb") as f:
+                    while True:
+                        chunk = await part.read_chunk()
+                        if not chunk:
+                            break
+                        bytes_written += len(chunk)
+                        if bytes_written > SELLER_PORTAL_MAX_SOURCE_BYTES:
+                            raise RuntimeError("Image is too large. Maximum source upload size is 25 MB.")
+                        f.write(chunk)
+
+                saved_path = await asyncio.to_thread(optimize_uploaded_image_file, raw_file_path)
+                raw_file_path = None
+
+        session_info = active_web_sessions.get(session_id or "")
+        if not session_info:
+            if saved_path and os.path.isfile(saved_path):
+                os.remove(saved_path)
             return web.json_response({"status": "error", "error": "Session expired or bot restarted."}, status=400)
 
-        if saved_path:
+        if not saved_path:
+            return web.json_response({"status": "error", "error": "No valid image was received."}, status=400)
+
+        async with session_info["upload_lock"]:
+            if session_info.get("finalized"):
+                cleanup_session_files({"cover_file": saved_path})
+                return web.json_response({"status": "error", "error": "This listing was already submitted."}, status=409)
+
             if is_cover == "1":
-                active_web_sessions[session_id]["cover_file"] = saved_path
+                if cover_version < int(session_info.get("cover_version", 0) or 0):
+                    cleanup_session_files({"cover_file": saved_path})
+                    return web.json_response({"status": "ok", "stale": True})
+
+                previous = session_info.get("cover_file")
+                session_info["cover_file"] = saved_path
+                session_info["cover_version"] = cover_version
+                if previous and previous != saved_path and os.path.isfile(previous):
+                    try:
+                        os.remove(previous)
+                    except OSError:
+                        pass
             else:
-                active_web_sessions[session_id]["secondary_files"].append(saved_path)
+                if order_index is None or order_index < 0 or order_index >= SELLER_PORTAL_MAX_GALLERY_IMAGES:
+                    cleanup_session_files({"cover_file": saved_path})
+                    return web.json_response(
+                        {"status": "error", "error": f"Gallery supports a maximum of {SELLER_PORTAL_MAX_GALLERY_IMAGES} images."},
+                        status=400,
+                    )
+
+                by_index = session_info["secondary_files_by_index"]
+                previous = by_index.get(order_index)
+                by_index[order_index] = saved_path
+                session_info["secondary_files"] = [by_index[idx] for idx in sorted(by_index)]
+                if previous and previous != saved_path and os.path.isfile(previous):
+                    try:
+                        os.remove(previous)
+                    except OSError:
+                        pass
+
+            session_info["all_paths"] = None
+            session_info["last_activity_at"] = utc_now()
 
         return web.json_response({"status": "ok"})
     except Exception as e:
+        for path in (saved_path, locals().get("raw_file_path")):
+            if path:
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                except OSError:
+                    pass
         print(f"Upload error: {e}")
-        return web.json_response({"status": "error", "error": str(e)}, status=500)
+        status = 400 if isinstance(e, (RuntimeError, ValueError)) else 500
+        return web.json_response({"status": "error", "error": str(e)}, status=status)
 
 async def _handle_finalize_listing(request, data):
     try:
@@ -2756,6 +3213,7 @@ async def _handle_finalize_listing(request, data):
         currency = data.get("currency", "USD")
         items_list = data.get("items", "None")
         description = data.get("description", "")
+        expected_gallery_count_raw = data.get("expectedGalleryCount", "")
 
         # Persist every Seller Portal highlight. The legacy `category` field
         # remains populated with the first supported highlight so older Shop
@@ -2789,8 +3247,42 @@ async def _handle_finalize_listing(request, data):
             return web.json_response({"status": "error", "error": "Please enter a valid price."}, status=400)
 
         session_info = active_web_sessions[session_id]
+        try:
+            expected_gallery_count = int(expected_gallery_count_raw or len(session_info.get("secondary_files_by_index", {})))
+        except (TypeError, ValueError):
+            return web.json_response({"status": "error", "error": "Invalid gallery upload count."}, status=400)
+
+        if expected_gallery_count < 1 or expected_gallery_count > SELLER_PORTAL_MAX_GALLERY_IMAGES:
+            return web.json_response(
+                {"status": "error", "error": f"Gallery must contain between 1 and {SELLER_PORTAL_MAX_GALLERY_IMAGES} images."},
+                status=400,
+            )
+
+        if session_info.get("finalized"):
+            return web.json_response({"status": "ok", "count": len(session_info.get("discord_cdn_urls", []))})
+
+        secondary_by_index = dict(session_info.get("secondary_files_by_index", {}))
+        if len(secondary_by_index) != expected_gallery_count:
+            return web.json_response(
+                {
+                    "status": "error",
+                    "error": f"Please wait for all gallery uploads to finish ({len(secondary_by_index)}/{expected_gallery_count} received).",
+                },
+                status=409,
+            )
+
+        expected_indexes = list(range(expected_gallery_count))
+        if sorted(secondary_by_index) != expected_indexes:
+            return web.json_response(
+                {"status": "error", "error": "Gallery upload order is incomplete. Please reopen the portal and retry."},
+                status=409,
+            )
+
         cover_path = session_info.get("cover_file")
-        secondary_paths = session_info.get("secondary_files", [])
+        secondary_paths = [secondary_by_index[idx] for idx in expected_indexes]
+        session_info["secondary_files"] = list(secondary_paths)
+        session_info["last_activity_at"] = utc_now()
+
         seller_id = session_info["seller_id"]
         channel_id = session_info["channel_id"]
         launcher_msg = session_info["launcher_msg"]
@@ -2802,9 +3294,6 @@ async def _handle_finalize_listing(request, data):
 
         if not ticket_channel or not review_channel:
             return web.json_response({"status": "error", "error": "The seller ticket or staff review channel is unavailable. Please contact staff."}, status=503)
-
-        if session_info.get("finalized"):
-            return web.json_response({"status": "ok", "count": len(session_info.get("discord_cdn_urls", []))})
 
         if session_info.get("all_paths") is None:
             all_paths = []
@@ -2868,7 +3357,7 @@ async def _handle_finalize_listing(request, data):
             title=f"📥 {submitted_offer_id} — {offer_title}",
             description=f"**Seller:** {seller.mention} (`{seller.id}`)\n**Ticket Channel:** {ticket_channel.mention}",
             color=0xF59E0B,
-            timestamp=datetime.datetime.utcnow()
+            timestamp=utc_now()
         )
         admin_embed.add_field(name="💰 Asking Price", value=f"{clean_price_num} {currency}", inline=False)
         admin_embed.add_field(name="🗂️ Shop Category", value=(category.replace("_", " ") if category else "All / Uncategorized"), inline=True)
@@ -2898,12 +3387,16 @@ async def _handle_finalize_listing(request, data):
                 count_str=f"{len(discord_cdn_urls)} proofs",
                 listing_id=listing_id
             )
-            await review_channel.send(
+            review_message = await review_channel.send(
                 content=f"🔔 {role_ping} **New Account Submission (Cover Thumbnail Selected):**",
                 embed=admin_embed,
                 view=approval_view
             )
             session_info["review_dispatched"] = True
+            try:
+                await persist_staff_review_context(listing_id, review_message.id, discord_cdn_urls)
+            except Exception as e:
+                print(f"Staff review context persistence warning for {listing_id}: {e}")
 
         try:
             await mark_seller_ticket_submission_active(ticket_channel, seller_id)
@@ -2934,25 +3427,38 @@ async def handle_finalize_listing(request):
     session_info = active_web_sessions.get(session_id)
     if not session_info:
         return web.json_response({"status": "error", "error": "Session expired. Please reopen the seller portal."}, status=400)
-    # Serialize repeated clicks/retries for this portal session.
+    # Serialize repeated clicks/retries and freeze the upload set for the full
+    # finalize operation. A late/malicious upload cannot change gallery order
+    # after Submit has begun.
     async with session_info["finalize_lock"]:
-        return await _handle_finalize_listing(request, data)
+        async with session_info["upload_lock"]:
+            return await _handle_finalize_listing(request, data)
 
 async def session_cleaner_task():
     while True:
         await asyncio.sleep(300)
-        now = datetime.datetime.utcnow()
+        now = utc_now()
         expired = []
         for sid, data in list(active_web_sessions.items()):
-            age = (now - data["created_at"]).total_seconds()
+            last_activity = data.get("last_activity_at") or data.get("created_at") or now
+            age = (now - last_activity).total_seconds()
             channel_exists = bot.get_channel(int(data.get("channel_id", 0) or 0)) is not None
-            if (data.get("finalized") and age > 3600) or (not channel_exists and age > 300):
+            has_recovery_state = bool(data.get("listing_id")) and not data.get("finalized")
+            ttl = SELLER_PORTAL_RECOVERY_TTL_SECONDS if has_recovery_state else SELLER_PORTAL_SESSION_TTL_SECONDS
+
+            if (
+                (data.get("finalized") and age > 3600)
+                or (not channel_exists and age > 300)
+                or (not data.get("finalized") and age > ttl)
+            ):
                 expired.append(sid)
+
         for sid in expired:
-            active_web_sessions.pop(sid, None)
+            data = active_web_sessions.pop(sid, None)
+            cleanup_session_files(data)
 
 async def start_web_server():
-    app = web.Application(client_max_size=300 * 1024 * 1024)
+    app = web.Application(client_max_size=30 * 1024 * 1024)
     app.router.add_get("/", ping_handler)
     app.router.add_get("/upload", handle_web_page)
     app.router.add_post("/api/upload_images_only", handle_upload_images_only)
@@ -2982,7 +3488,7 @@ class FeedbackModal(Modal, title="Rate Your Experience"):
         stars = self.rating_input.value.strip()
         comment = self.review_input.value.strip()
         vouch_channel = interaction.guild.get_channel(VOUCH_CHANNEL_ID)
-        vouch_embed = discord.Embed(title="⭐ NEW VERIFIED CLIENT REVIEW", description=f"**Client:** {interaction.user.mention}\n**Rating:** `{stars}`\n\n> {comment}", color=0xF59E0B, timestamp=datetime.datetime.utcnow())
+        vouch_embed = discord.Embed(title="⭐ NEW VERIFIED CLIENT REVIEW", description=f"**Client:** {interaction.user.mention}\n**Rating:** `{stars}`\n\n> {comment}", color=0xF59E0B, timestamp=utc_now())
         vouch_embed.set_thumbnail(url=interaction.user.display_avatar.url)
         vouch_embed.set_footer(text="Pedrao22k Verified Customer Review")
         if vouch_channel:
@@ -3018,6 +3524,11 @@ async def on_ready():
         bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
         bot.add_view(ShopLaunchView())
         bot.add_view(PurchaseOfferActivityView())
+        try:
+            await restore_pending_review_views()
+            await reconcile_resolved_listing_messages()
+        except Exception as e:
+            print(f"Listing review/status reconciliation error: {e}")
         persistent_views_registered = True
     if not background_tasks_started:
         bot.loop.create_task(start_web_server())
@@ -3088,6 +3599,11 @@ async def sold_command(interaction: discord.Interaction, account_id: Optional[st
         return await interaction.response.send_message(f"❌ Account {format_offer_id(offer_number)} was not found.", ephemeral=True)
     if listing.get("status") == "SOLD":
         return await interaction.response.send_message(f"⚠️ Account {format_offer_id(offer_number)} is already marked as sold.", ephemeral=True)
+    if listing.get("status") != "PUBLISHED":
+        return await interaction.response.send_message(
+            f"❌ Only a published offer can be marked as sold. Current status: `{listing.get('status')}`.",
+            ephemeral=True,
+        )
 
     embed = discord.Embed(
         title=f"Mark {format_offer_id(offer_number)} as sold?",
@@ -3115,6 +3631,23 @@ async def testwelcome(ctx):
 
 @bot.command()
 async def pay(ctx):
+    if not isinstance(ctx.channel, discord.TextChannel) or ctx.channel.category_id != TICKET_CATEGORY_ID:
+        return await ctx.send("⚠️ Payment details are only available inside a private order ticket.", delete_after=10)
+
+    configured = [
+        ("🟢 USDT (TRC-20) [Recommended]", CRYPTO_ADDRESSES["USDT_TRC20"]),
+        ("🟡 USDT (BEP-20 / BSC)", CRYPTO_ADDRESSES["USDT_BEP20"]),
+        ("⚪ Litecoin (LTC) [Low Fee]", CRYPTO_ADDRESSES["LTC"]),
+        ("🟠 Bitcoin (BTC)", CRYPTO_ADDRESSES["BTC"]),
+    ]
+    configured = [(label, address) for label, address in configured if address]
+
+    if not configured:
+        return await ctx.send(
+            "⚠️ **Payment addresses are not configured in the secure server environment yet.** "
+            "Please wait for a staff member before sending any payment."
+        )
+
     embed = discord.Embed(
         title="💳 PEDRAO22K. | OFFICIAL PAYMENT GATEWAY",
         description=(
@@ -3124,13 +3657,11 @@ async def pay(ctx):
             "• Once sent, upload the **Transaction ID / Screenshot** in this ticket.\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
-        color=0xF59E0B
+        color=0xF59E0B,
     )
     code_block = "```"
-    embed.add_field(name="🟢 USDT (TRC-20) [Recommended]", value=f"{code_block}text\n{CRYPTO_ADDRESSES['USDT_TRC20']}\n{code_block}", inline=False)
-    embed.add_field(name="🟡 USDT (BEP-20 / BSC)", value=f"{code_block}text\n{CRYPTO_ADDRESSES['USDT_BEP20']}\n{code_block}", inline=False)
-    embed.add_field(name="⚪ Litecoin (LTC) [Low Fee]", value=f"{code_block}text\n{CRYPTO_ADDRESSES['LTC']}\n{code_block}", inline=False)
-    embed.add_field(name="🟠 Bitcoin (BTC)", value=f"{code_block}text\n{CRYPTO_ADDRESSES['BTC']}\n{code_block}", inline=False)
+    for label, address in configured:
+        embed.add_field(name=label, value=f"{code_block}text\n{address}\n{code_block}", inline=False)
     embed.set_footer(text="Pedrao22k. | Always double check the address before transferring")
     await ctx.send(embed=embed)
 
