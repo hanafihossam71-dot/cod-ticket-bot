@@ -1568,6 +1568,40 @@ async def rotate_seller_portal_session(channel: discord.TextChannel, seller, lau
     register_seller_portal_session(seller.id, channel.id, launcher_msg, session_id=session_id)
     return launcher_msg
 
+
+async def post_finalize_seller_portal_housekeeping(
+    ticket_channel: discord.TextChannel,
+    seller,
+    launcher_msg: discord.Message,
+    seller_id: int,
+):
+    """Run non-critical Discord housekeeping after the browser already received success.
+
+    Discord channel edits or message edits can occasionally stall at the network/API
+    layer. None of them are required for the listing itself to be durable, so they
+    must never keep the Seller Portal stuck on PROCESSING after staff already got
+    the submission.
+    """
+    try:
+        await asyncio.wait_for(
+            mark_seller_ticket_submission_active(ticket_channel, seller_id),
+            timeout=10,
+        )
+    except asyncio.TimeoutError:
+        print(f"Seller ticket state update timed out after finalize for {ticket_channel.id}.")
+    except Exception as e:
+        print(f"Seller ticket submission state error: {e}")
+
+    try:
+        await asyncio.wait_for(
+            rotate_seller_portal_session(ticket_channel, seller, launcher_msg),
+            timeout=10,
+        )
+    except asyncio.TimeoutError:
+        print(f"Seller portal rotation timed out after finalize for {ticket_channel.id}.")
+    except Exception as e:
+        print(f"Seller portal rotation error: {e}")
+
 async def ensure_seller_portal_launcher(channel: discord.TextChannel, seller_id: int):
     seller = channel.guild.get_member(int(seller_id))
     if seller is None:
@@ -3785,16 +3819,20 @@ async def _handle_finalize_listing(request, data):
             except Exception as e:
                 print(f"Staff review context persistence warning for {listing_id}: {e}")
 
-        try:
-            await mark_seller_ticket_submission_active(ticket_channel, seller_id)
-        except Exception as e:
-            print(f"Seller ticket submission state error: {e}")
-
+        # The listing, seller status card, staff review card, and durable review
+        # context are complete at this point. Mark the session finalized BEFORE
+        # non-critical Discord housekeeping so the browser can never remain stuck
+        # on PROCESSING just because a channel/message edit is slow.
         session_info["finalized"] = True
-        try:
-            await rotate_seller_portal_session(ticket_channel, seller, launcher_msg)
-        except Exception as e:
-            print(f"Seller portal rotation error: {e}")
+
+        bot.loop.create_task(
+            post_finalize_seller_portal_housekeeping(
+                ticket_channel=ticket_channel,
+                seller=seller,
+                launcher_msg=launcher_msg,
+                seller_id=seller_id,
+            )
+        )
 
         return web.json_response({
             "status": "ok",
