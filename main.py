@@ -95,6 +95,8 @@ def dedupe_file_paths_by_content(paths: list[str]) -> list[str]:
     return unique_paths
 
 STORAGE_IMAGE_CACHE_CONTROL = "31536000"
+STORAGE_UPLOAD_MAX_ATTEMPTS = 4
+STORAGE_UPLOAD_RETRY_STATUSES = {408, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 
 # Seller screenshots remain visually high quality, but the files stored in the Shop
 # are normalized so a single oversized upload can never make View Offer unnecessarily
@@ -278,6 +280,67 @@ async def supabase_request(method: str, endpoint: str, *, json_data=None, body=N
         except Exception:
             return text_body
 
+def _supabase_status_from_error(error: Exception) -> int | None:
+    match = re.search(r"Supabase request failed \((\d{3})\)", str(error))
+    return int(match.group(1)) if match else None
+
+
+async def _listing_storage_object_exists(object_path: str) -> bool:
+    """Verify an object after an ambiguous Storage response without exposing it publicly."""
+    try:
+        await supabase_request(
+            "GET",
+            f"/storage/v1/object/info/listing-images/{object_path}",
+        )
+        return True
+    except Exception:
+        return False
+
+
+async def upload_listing_storage_object(object_path: str, payload: bytes, content_type: str):
+    """Upload one private listing image with bounded retry for transient Storage failures.
+
+    Supabase/edge 5xx responses can be transient. Before retrying we verify whether the
+    object actually arrived, which avoids treating an ambiguous successful upload as a
+    failure and avoids duplicate-object errors on the same immutable path.
+    """
+    last_error: Exception | None = None
+    for attempt in range(1, STORAGE_UPLOAD_MAX_ATTEMPTS + 1):
+        try:
+            await supabase_request(
+                "POST",
+                f"/storage/v1/object/listing-images/{object_path}",
+                body=payload,
+                content_type=content_type,
+                cache_control=STORAGE_IMAGE_CACHE_CONTROL,
+            )
+            return
+        except Exception as error:
+            last_error = error
+
+            # A proxy/edge can fail after Storage already committed the object.
+            if await _listing_storage_object_exists(object_path):
+                print(f"Storage upload response was ambiguous but object exists: {object_path}")
+                return
+
+            status = _supabase_status_from_error(error)
+            retryable = status is None or status in STORAGE_UPLOAD_RETRY_STATUSES or (status >= 500 if status is not None else False)
+            if not retryable or attempt >= STORAGE_UPLOAD_MAX_ATTEMPTS:
+                raise
+
+            delay = min(0.75 * (2 ** (attempt - 1)), 4.0)
+            print(
+                f"Transient Storage upload failure for {object_path} "
+                f"(attempt {attempt}/{STORAGE_UPLOAD_MAX_ATTEMPTS}, status={status or 'network'}). "
+                f"Retrying in {delay:.2f}s..."
+            )
+            await asyncio.sleep(delay)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Storage upload failed without an error detail.")
+
+
 async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket_channel_id: int, title: str, price: float, currency: str, category: str | None, categories: list[str], description: str, image_paths: list):
     """Create one pending listing and its images; compensate on partial failure."""
     uploaded_objects = []
@@ -313,13 +376,7 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
             with open(image_path, "rb") as image_file:
                 payload = image_file.read()
             mime = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/gif" if ext == ".gif" else "image/jpeg"
-            await supabase_request(
-                "POST",
-                f"/storage/v1/object/listing-images/{object_path}",
-                body=payload,
-                content_type=mime,
-                cache_control=STORAGE_IMAGE_CACHE_CONTROL,
-            )
+            await upload_listing_storage_object(object_path, payload, mime)
             uploaded_objects.append(object_path)
             image_rows.append({"listing_id": listing_id, "image_url": object_path, "sort_order": index})
 
@@ -333,13 +390,7 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
                 try:
                     thumbnail_payload = await asyncio.to_thread(build_cover_thumbnail_bytes, image_paths[0])
                     thumbnail_object_path = f"{listing_id}/cover-thumb-{uuid.uuid4().hex}.webp"
-                    await supabase_request(
-                        "POST",
-                        f"/storage/v1/object/listing-images/{thumbnail_object_path}",
-                        body=thumbnail_payload,
-                        content_type="image/webp",
-                        cache_control=STORAGE_IMAGE_CACHE_CONTROL,
-                    )
+                    await upload_listing_storage_object(thumbnail_object_path, thumbnail_payload, "image/webp")
                     uploaded_objects.append(thumbnail_object_path)
                 except Exception as thumbnail_error:
                     thumbnail_object_path = image_rows[0]["image_url"]
