@@ -2887,11 +2887,11 @@ HTML_PAGE = """<!DOCTYPE html>
             text-transform: uppercase; letter-spacing: 0.8px; box-shadow: 0 4px 25px rgba(245, 158, 11, 0.45);
         }
         .btn:disabled { background: #252631; color: #64748B; cursor: not-allowed; box-shadow: none; }
-        /* Final submission has no truthful percentage: animate the button until the server confirms. */
-        .btn.finalizing { position: relative; overflow: hidden; background: #252631; color: #E2E8F0; box-shadow: none; cursor: wait; padding-bottom: 21px; }
-        .btn.finalizing::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 5px; background: linear-gradient(90deg, transparent 0%, #FFB800 45%, #F59E0B 60%, transparent 100%); background-size: 200% 100%; animation: submit-progress 1.5s linear infinite; }
-        @keyframes submit-progress { from { background-position: 200% 0; } to { background-position: -200% 0; } }
-        @media (prefers-reduced-motion: reduce) { .btn.finalizing::after { animation: none; background: #FFB800; } }
+        /* The PROCESSING button itself fills; never indicate completion before the server responds. */
+        .btn.finalizing { position: relative; isolation: isolate; overflow: hidden; background: #252631; color: #F8FAFC; box-shadow: none; cursor: wait; }
+        .btn.finalizing::before { content: ""; position: absolute; inset: 0 auto 0 0; width: var(--submit-fill, 0%); background: linear-gradient(110deg, #C77C0A, #FFBF33 75%, #F59E0B); border-radius: inherit; z-index: -1; transition: width 380ms ease-out; }
+        .btn.finalizing .processing-label { position: relative; z-index: 1; text-shadow: 0 1px 3px #17120C; }
+        @media (prefers-reduced-motion: reduce) { .btn.finalizing::before { transition: none; } }
     </style>
 </head>
 <body>
@@ -3405,7 +3405,24 @@ HTML_PAGE = """<!DOCTYPE html>
             const submitBtn = document.getElementById('submitBtn');
             submitBtn.disabled = true;
             submitBtn.classList.add('finalizing');
-            submitBtn.textContent = "⏳ PROCESSING — Sending to staff for approval. Please wait...";
+            submitBtn.style.setProperty('--submit-fill', '0%');
+            submitBtn.innerHTML = '<span class="processing-label">PROCESSING</span>';
+            // No accurate completion percentage is available from finalize_listing.
+            // Slowly approach 92%; only fill to 100% once the server confirms success.
+            let submitFill = 0;
+            const fillTimer = window.setInterval(() => {
+                submitFill = Math.min(92, submitFill + Math.max(0.45, (92 - submitFill) * 0.065));
+                submitBtn.style.setProperty('--submit-fill', submitFill.toFixed(2) + '%');
+            }, 320);
+            const stopFill = () => window.clearInterval(fillTimer);
+            const resetSubmitButton = () => {
+                stopFill();
+                isSubmittingListing = false;
+                submitBtn.classList.remove('finalizing');
+                submitBtn.style.removeProperty('--submit-fill');
+                submitBtn.textContent = "🚀 Submit Listing to Staff";
+                checkSubmitReady();
+            };
 
             // Image-upload progress is separate and must never reappear on Submit.
             document.getElementById('progressBox').style.display = "none";
@@ -3423,21 +3440,20 @@ HTML_PAGE = """<!DOCTYPE html>
             try {
                 const res = await fetch("/api/finalize_listing", { method: "POST", body: formData });
                 const json = await res.json();
-                if (json.status === "ok") {
-                    document.getElementById('formScreen').innerHTML = '<div style="text-align:center; padding: 40px;"><h2 style="color:#10B981">🎉 SUBMITTED SUCCESSFULLY!</h2><p style="color:#CBD5E1;">Your listing with all proofs has been sent to staff. You can close this window and return to Discord.</p></div>';
+                if (res.ok && json.status === "ok") {
+                    stopFill();
+                    // Fill the remaining space only AFTER the finalize endpoint confirms success.
+                    submitBtn.style.setProperty('--submit-fill', '100%');
+                    window.setTimeout(() => {
+                        document.getElementById('formScreen').innerHTML = '<div style="text-align:center; padding: 40px;"><h2 style="color:#10B981">🎉 SUBMITTED SUCCESSFULLY!</h2><p style="color:#CBD5E1;">Your listing with all proofs has been sent to staff. You can close this window and return to Discord.</p></div>';
+                    }, window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 410);
                 } else {
                     alert(json.error || "Submission failed.");
-                    isSubmittingListing = false;
-                    submitBtn.classList.remove('finalizing');
-                    submitBtn.textContent = "🚀 Submit Listing to Staff";
-                    checkSubmitReady();
+                    resetSubmitButton();
                 }
             } catch (e) {
                 alert("Network error. Check your ticket before retrying to avoid duplicate submissions.");
-                isSubmittingListing = false;
-                submitBtn.classList.remove('finalizing');
-                submitBtn.textContent = "🚀 Submit Listing to Staff";
-                checkSubmitReady();
+                resetSubmitButton();
             }
         }
     </script>
