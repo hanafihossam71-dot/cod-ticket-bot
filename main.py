@@ -10,6 +10,7 @@ import time
 import uuid
 import re
 import hashlib
+import weakref
 import aiohttp
 from aiohttp import web
 from typing import Optional
@@ -20,11 +21,11 @@ TOKEN = os.environ.get("DISCORD_TOKEN", "")
 WELCOME_CHANNEL_ID = 1552627900191219752        # آيدي روم welcome
 SUPPORT_ROLE_ID = 1552628903481184336            # آيدي رتبة Admin
 TICKET_CATEGORY_ID = 1552642061608419408       # تصنيف تذاكر الطلبات العامة (Tickets ✅)
-SELL_CATEGORY_ID = 1552642160992591892            # تصنيف تذاكر بيع الحسابات
+SELL_CATEGORY_ID = 1552642160992591892           # تصنيف تذاكر بيع الحسابات
 TICKET_LOGS_CHANNEL_ID = 1552640603639259207     # روم حفظ سجلات التذاكر المحذوفة
 MARKETPLACE_CHANNEL_ID = 1553436681611386961     # روم المنتدى (Forum Channel) للمعروضات
 REVIEW_CHANNEL_ID = 1552643577547456564          # روم مراجعة الإدارة
-VOUCH_CHANNEL_ID = 1552628000000000000          # آيدي روم الفيدباك (vouches-feedback)
+VOUCH_CHANNEL_ID = 1552628000000000000           # آيدي روم الفيدباك (vouches-feedback)
 
 WEB_PORT = int(os.environ.get("PORT", 8080))
 BASE_WEB_URL = os.environ.get("BASE_WEB_URL", "https://cod-ticket-bot-production.up.railway.app")
@@ -53,10 +54,18 @@ intents.message_content = True
 intents.guilds = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+class PedraoBot(commands.Bot):
+    async def close(self):
+        try:
+            await close_shared_http_session()
+        finally:
+            await super().close()
+
+bot = PedraoBot(command_prefix="!", intents=intents)
 
 
 def dedupe_file_paths_by_content(paths: list[str]) -> list[str]:
+    """Preserve upload order while removing byte-identical images."""
     unique_paths = []
     seen_hashes = set()
     for path in paths:
@@ -73,6 +82,29 @@ def dedupe_file_paths_by_content(paths: list[str]) -> list[str]:
         unique_paths.append(path)
     return unique_paths
 
+shared_http_session: aiohttp.ClientSession | None = None
+shared_http_session_lock = asyncio.Lock()
+
+async def get_shared_http_session() -> aiohttp.ClientSession:
+    """Reuse TCP/TLS connections for Supabase and Discord HTTP calls."""
+    global shared_http_session
+    if shared_http_session is not None and not shared_http_session.closed:
+        return shared_http_session
+    async with shared_http_session_lock:
+        if shared_http_session is None or shared_http_session.closed:
+            connector = aiohttp.TCPConnector(limit=100, limit_per_host=50, ttl_dns_cache=300, enable_cleanup_closed=True)
+            shared_http_session = aiohttp.ClientSession(
+                connector=connector,
+                timeout=aiohttp.ClientTimeout(total=90),
+            )
+    return shared_http_session
+
+async def close_shared_http_session():
+    global shared_http_session
+    if shared_http_session is not None and not shared_http_session.closed:
+        await shared_http_session.close()
+    shared_http_session = None
+
 async def supabase_request(method: str, endpoint: str, *, json_data=None, body=None, content_type=None):
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError("Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Railway.")
@@ -86,20 +118,20 @@ async def supabase_request(method: str, endpoint: str, *, json_data=None, body=N
     if content_type:
         headers["Content-Type"] = content_type
         headers["x-upsert"] = "false"
-    timeout = aiohttp.ClientTimeout(total=90)
-    async with aiohttp.ClientSession(timeout=timeout) as client:
-        async with client.request(method, f"{SUPABASE_URL}{endpoint}", headers=headers, json=json_data, data=body) as response:
-            text_body = await response.text()
-            if response.status < 200 or response.status >= 300:
-                raise RuntimeError(f"Supabase request failed ({response.status}): {text_body[:500]}")
-            if not text_body:
-                return None
-            try:
-                return await response.json()
-            except Exception:
-                return text_body
+    client = await get_shared_http_session()
+    async with client.request(method, f"{SUPABASE_URL}{endpoint}", headers=headers, json=json_data, data=body) as response:
+        text_body = await response.text()
+        if response.status < 200 or response.status >= 300:
+            raise RuntimeError(f"Supabase request failed ({response.status}): {text_body[:500]}")
+        if not text_body:
+            return None
+        try:
+            return await response.json()
+        except Exception:
+            return text_body
 
 async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket_channel_id: int, title: str, price: float, currency: str, category: str | None, categories: list[str], description: str, image_paths: list):
+    """Create one pending listing and its images; compensate on partial failure."""
     uploaded_objects = []
     try:
         rows = await supabase_request(
@@ -111,6 +143,8 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
                 "title": title,
                 "price": price,
                 "currency": currency,
+                # Keep the legacy primary category for backwards compatibility,
+                # but persist every selected Seller Portal highlight as well.
                 "category": category,
                 "categories": categories,
                 "description": description,
@@ -135,8 +169,14 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
 
         if image_rows:
             await supabase_request("POST", "/rest/v1/listing_images", json_data=image_rows)
+            await supabase_request(
+                "PATCH",
+                f"/rest/v1/listings?id=eq.{listing_id}",
+                json_data={"cover_image_path": image_rows[0]["image_url"]},
+            )
         return listing_id
     except Exception:
+        # Best-effort rollback so a failed upload does not leave a half-created offer.
         if uploaded_objects:
             try:
                 await supabase_request(
@@ -145,6 +185,8 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
                 )
             except Exception as cleanup_error:
                 print(f"Supabase storage rollback error for {listing_id}: {cleanup_error}")
+        # The POST may have reached Supabase even if the client timed out,
+        # so attempt deletion by the stable session UUID in every failure case.
         try:
             await supabase_request("DELETE", f"/rest/v1/listings?id=eq.{listing_id}")
         except Exception as cleanup_error:
@@ -260,6 +302,27 @@ async def get_active_ticket_by_channel(channel_id: int):
     return rows[0] if isinstance(rows, list) and rows else None
 
 async def get_interested_active_tickets(listing_id: str):
+    """Fetch interested ACTIVE tickets in one PostgREST join; fall back safely."""
+    try:
+        rows = await supabase_request(
+            "GET",
+            f"/rest/v1/purchase_ticket_offers?listing_id=eq.{listing_id}"
+            "&select=id,ticket_id,listing_id,offer_number,status,sold_notified_at,"
+            "purchase_tickets!inner(id,buyer_discord_id,channel_id,guild_id,status)"
+            "&purchase_tickets.status=eq.ACTIVE",
+        )
+        if isinstance(rows, list):
+            result = []
+            for row in rows:
+                ticket = row.get("purchase_tickets")
+                if isinstance(ticket, dict):
+                    link = {k: v for k, v in row.items() if k != "purchase_tickets"}
+                    result.append((ticket, link))
+            return result
+    except Exception as join_error:
+        print(f"Purchase ticket joined lookup fallback: {join_error}")
+
+    # Compatibility fallback if PostgREST relationship metadata is temporarily stale.
     links = await supabase_request(
         "GET",
         f"/rest/v1/purchase_ticket_offers?listing_id=eq.{listing_id}&select=id,ticket_id,listing_id,offer_number,status,sold_notified_at",
@@ -329,6 +392,12 @@ def build_seller_status_embed(
     reason: str | None = None,
     avatar_url: str | None = None,
 ) -> discord.Embed:
+    """Build the single compact canonical seller-facing status card for one listing.
+
+    V5.63 intentionally keeps the Discord card minimal. Full listing details remain
+    stored in Supabase / Seller Portal; only the information needed to identify and
+    follow the listing status is shown in the seller ticket.
+    """
     status = str(status or "").upper()
 
     if status == "PUBLISHED":
@@ -359,7 +428,7 @@ def build_seller_status_embed(
         description = (
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🆔 **Offer:** `{offer_id}`\n"
-            f"🏷️️ **Offer Title:** `{offer_title}`\n"
+            f"🏷️ **Offer Title:** `{offer_title}`\n"
             f"💰 **Asking Price:** `{price_str}`\n"
             "⛔ **Current Status:** `Sold / No Longer Available`"
         )
@@ -383,6 +452,7 @@ def build_seller_status_embed(
 
 
 async def persist_seller_status_message_id(listing_id: str, message_id: int):
+    """Best-effort persistence used so /sold can edit the same seller card later."""
     if not listing_id or not message_id:
         return
     try:
@@ -392,10 +462,12 @@ async def persist_seller_status_message_id(listing_id: str, message_id: int):
             json_data={"seller_status_message_id": int(message_id)},
         )
     except Exception as e:
+        # Keep listing workflows working even if an older database has not received the V5.62 column yet.
         print(f"Seller status message persistence warning for {listing_id}: {e}")
 
 
 async def fetch_listing_status_context(offer_number: int):
+    """Fetch data needed to update the seller status card; gracefully supports pre-V5.62 schema."""
     select_new = "id,offer_number,title,price,currency,status,seller_discord_id,seller_ticket_channel_id,seller_status_message_id,categories"
     try:
         rows = await supabase_request(
@@ -424,6 +496,7 @@ async def fetch_listing_image_count(listing_id: str) -> int:
 
 
 async def locate_seller_status_message(guild: discord.Guild | None, listing: dict) -> discord.Message | None:
+    """Resolve the canonical seller card by persisted ID, with a safe legacy scan fallback."""
     if not guild or not listing:
         return None
     channel_id = listing.get("seller_ticket_channel_id")
@@ -440,6 +513,8 @@ async def locate_seller_status_message(guild: discord.Guild | None, listing: dic
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
+    # Legacy fallback for listings created before V5.62. Only touch bot-authored
+    # messages whose embed title contains the exact offer ID.
     offer_id = format_offer_id(int(listing.get("offer_number") or 0))
     try:
         async for msg in channel.history(limit=100):
@@ -455,6 +530,7 @@ async def locate_seller_status_message(guild: discord.Guild | None, listing: dic
 
 
 async def update_seller_status_card_for_sold(guild: discord.Guild | None, offer_number: int):
+    """Best-effort SOLD transition for the seller's canonical listing card."""
     try:
         listing = await fetch_listing_status_context(offer_number)
         if not listing:
@@ -477,6 +553,7 @@ async def update_seller_status_card_for_sold(guild: discord.Guild | None, offer_
         )
         await message.edit(embed=embed, view=None)
     except Exception as e:
+        # SOLD must never fail just because the historical seller card cannot be edited.
         print(f"Seller SOLD status card update warning for {offer_number}: {e}")
 
 
@@ -484,12 +561,15 @@ def purchase_ticket_topic(listing_id: str, offer_number: int, buyer_id: int) -> 
     return f"pedrao22k_purchase;listing_id={listing_id};offer_number={offer_number};buyer_id={buyer_id}"
 
 def seller_listing_topic(listing_id: str, offer_number: int, seller_id: int) -> str:
+    # Lets an Activity launched from the seller ticket resolve the exact approved offer
+    # without using a public website link.
     return f"pedrao22k_seller_listing;listing_id={listing_id};offer_number={offer_number};seller_id={seller_id}"
 
 
 SELLER_TICKET_CLOSE_POLICY = "24h_v1"
 
 def seller_ticket_topic(seller_id: int, *, close_at: int = 0, hold_open: bool = False) -> str:
+    """Persistent seller-room state. Kept in the Discord topic so restarts do not lose auto-close state."""
     return (
         f"pedrao22k_seller_ticket;seller_id={int(seller_id)};"
         f"close_at={int(close_at or 0)};hold={1 if hold_open else 0};policy={SELLER_TICKET_CLOSE_POLICY}"
@@ -541,10 +621,19 @@ def parse_seller_listing_topic(topic: Optional[str]) -> Optional[dict]:
     return result
 
 def parse_activity_offer_topic(topic: Optional[str]) -> Optional[dict]:
+    # Purchase tickets and approved seller tickets can both launch the Activity
+    # directly into their exact offer.
     return parse_purchase_ticket_topic(topic) or parse_seller_listing_topic(topic)
 
+
+
+# Global anti-double-click guard for Discord component/modal actions that create
+# messages, tickets, confirmations, publications, or other side effects.
+# Navigation buttons (Prev/Next) are intentionally excluded so normal browsing
+# remains responsive.
 INTERACTION_CLICK_GUARD_SECONDS = 6.0
 _interaction_click_guard: dict[tuple[int, int, str], float] = {}
+
 
 async def allow_single_interaction(
     interaction: discord.Interaction,
@@ -553,6 +642,11 @@ async def allow_single_interaction(
     cooldown: float = INTERACTION_CLICK_GUARD_SECONDS,
     acknowledge_duplicate: bool = True,
 ) -> bool:
+    """Return True only for the first click in a short window.
+
+    Rapid duplicate clicks are silently acknowledged so Discord does not show
+    "This interaction failed" and no duplicate message/action is created.
+    """
     now = time.monotonic()
     user_id = int(getattr(interaction.user, "id", 0) or 0)
     channel_id = int(getattr(interaction, "channel_id", 0) or 0)
@@ -576,22 +670,32 @@ async def allow_single_interaction(
     _interaction_click_guard[key] = now
     return True
 
+# Prevent duplicate Activity launch interactions from rapid/repeated clicks.
+# Discord requires each component interaction to be acknowledged quickly; repeated
+# LAUNCH_ACTIVITY callbacks while the same Activity is already opening can be
+# rejected by the client/API and surface as "This interaction failed".
 ACTIVITY_CLICK_COOLDOWN_SECONDS = 5.0
 _activity_click_guard: dict[tuple[int, str], float] = {}
 
+
 async def launch_activity_safely(interaction: discord.Interaction, action_key: str) -> bool:
+    """Launch the Discord Activity once and silently ACK rapid duplicate clicks."""
     now = time.monotonic()
     user_id = int(interaction.user.id)
     key = (user_id, action_key)
 
+    # Keep this small in long-running processes.
     if len(_activity_click_guard) > 2000:
         cutoff = now - 60.0
         for old_key, old_time in list(_activity_click_guard.items()):
-            if old_key < cutoff:
+            if old_time < cutoff:
                 _activity_click_guard.pop(old_key, None)
 
     previous = _activity_click_guard.get(key, 0.0)
     if now - previous < ACTIVITY_CLICK_COOLDOWN_SECONDS:
+        # Acknowledge the extra click without attempting to launch a second
+        # Activity instance. For component interactions this produces no visible
+        # "thinking" message and avoids Discord's red interaction-failed banner.
         try:
             if not interaction.response.is_done():
                 await interaction.response.defer()
@@ -606,6 +710,10 @@ async def launch_activity_safely(interaction: discord.Interaction, action_key: s
         return True
     except Exception as e:
         print(f"Activity launch error ({action_key}): {e}")
+
+        # If Discord rejected the launch before the interaction was acknowledged,
+        # send a normal ephemeral response so the user does not receive the generic
+        # red "interaction failed" state.
         if not interaction.response.is_done():
             try:
                 await interaction.response.send_message(
@@ -619,6 +727,7 @@ async def launch_activity_safely(interaction: discord.Interaction, action_key: s
 
 
 class ShopLaunchView(View):
+    """Persistent button used in the public accounts-for-sale text channel."""
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -632,6 +741,11 @@ class ShopLaunchView(View):
 
 
 class PurchaseOfferActivityView(View):
+    """Persistent View Offer button for purchase tickets.
+
+    The offer is resolved from the ticket channel topic by the Activity, so the
+    same persistent custom_id works for every ticket and survives bot restarts.
+    """
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -643,6 +757,9 @@ class PurchaseOfferActivityView(View):
     )
     async def view_offer(self, interaction: discord.Interaction, button: Button):
         channel_id = getattr(interaction.channel, "id", 0)
+        # A unified purchase ticket can contain several offers. Resolve the
+        # exact offer from the message whose View Offer button was clicked and
+        # update only the Activity context stored in the channel topic.
         try:
             if isinstance(interaction.channel, discord.TextChannel) and interaction.message and interaction.message.embeds:
                 offer_number = normalize_offer_number(interaction.message.embeds[0].title or "")
@@ -660,6 +777,12 @@ class PurchaseOfferActivityView(View):
 
 
 class SellerApprovedActivityView(View):
+    """Persistent launcher shown after a seller listing is approved.
+
+    Unlike a normal URL button, this uses Discord's Activity launcher so the
+    Accounts Shop stays inside Discord. The seller ticket topic maps the current
+    channel to the exact approved offer.
+    """
     def __init__(self):
         super().__init__(timeout=None)
 
@@ -675,6 +798,12 @@ class SellerApprovedActivityView(View):
 
 
 def find_shop_entry_channel() -> Optional[discord.TextChannel]:
+    """Find the new text channel used as the Accounts Shop entry point.
+
+    SHOP_ENTRY_CHANNEL_ID can be set later for a strict ID-based configuration.
+    Until then, fall back to a normal text channel whose name contains
+    'accounts-for-sale' while excluding legacy/old channels.
+    """
     if SHOP_ENTRY_CHANNEL_ID:
         channel = bot.get_channel(SHOP_ENTRY_CHANNEL_ID)
         return channel if isinstance(channel, discord.TextChannel) else None
@@ -697,6 +826,7 @@ def _message_has_shop_launch_button(message: discord.Message) -> bool:
 
 
 async def ensure_shop_entry_read_only(channel: discord.TextChannel):
+    """Make the Shop launcher channel read-only for @everyone without replacing other overrides."""
     try:
         overwrite = channel.overwrites_for(channel.guild.default_role)
         overwrite.send_messages = False
@@ -711,10 +841,12 @@ async def ensure_shop_entry_read_only(channel: discord.TextChannel):
         )
         print(f"✅ Accounts Shop channel set to read-only for @everyone: #{channel.name} ({channel.id}).")
     except Exception as e:
+        # Do not block the launcher if the bot lacks Manage Channels; log the exact issue instead.
         print(f"Accounts Shop read-only permission error for #{channel.name} ({channel.id}): {e}")
 
 
 async def ensure_shop_entry_message():
+    """Keep the Shop entry channel to exactly one launcher message and no conversation history."""
     channel = find_shop_entry_channel()
     if channel is None:
         print("Accounts Shop entry channel not found. Set SHOP_ENTRY_CHANNEL_ID or create a text channel containing 'accounts-for-sale'.")
@@ -725,6 +857,8 @@ async def ensure_shop_entry_message():
     launcher_to_keep = None
     messages_to_delete = []
     try:
+        # Scan the full channel so old conversation does not remain visible below the Activity.
+        # History is newest-first, so the first launcher found is the one we preserve.
         async for message in channel.history(limit=None):
             is_launcher = False
             if bot.user and message.author.id == bot.user.id:
@@ -766,6 +900,7 @@ async def ensure_shop_entry_message():
 
 
 async def ensure_purchase_ticket_activity_button(channel: discord.TextChannel):
+    """Upgrade an existing purchase ticket's legacy URL button in place."""
     try:
         async for message in channel.history(limit=50):
             if message.author.id != bot.user.id or not message.embeds:
@@ -835,7 +970,14 @@ async def archive_and_delete_ticket(channel: discord.TextChannel, closed_by, *, 
     except Exception as e:
         print(f"Ticket delete error for {channel.id}: {e}")
 
-purchase_ticket_lock = asyncio.Lock()
+purchase_ticket_locks: weakref.WeakValueDictionary[int, asyncio.Lock] = weakref.WeakValueDictionary()
+
+def get_purchase_ticket_lock(buyer_id: int) -> asyncio.Lock:
+    lock = purchase_ticket_locks.get(buyer_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        purchase_ticket_locks[buyer_id] = lock
+    return lock
 
 os.makedirs("uploaded_screenshots", exist_ok=True)
 active_web_sessions = {}
@@ -892,6 +1034,13 @@ async def seller_ticket_has_pending(channel_id: int) -> bool:
     return bool(isinstance(rows, list) and rows)
 
 async def backfill_legacy_pending_seller_listings(seller_id: int, channel_id: int):
+    """Attach pre-V5.60 pending listings to the seller room being adopted.
+
+    Before V5.60 the listings table did not store the seller ticket channel.
+    Historically there was only one active seller room per seller, so attaching
+    only unresolved PENDING_REVIEW rows is the safest migration and prevents
+    an old pending submission from being ignored by auto-close checks.
+    """
     rows = await supabase_request(
         "GET",
         f"/rest/v1/listings?seller_discord_id=eq.{int(seller_id)}&seller_ticket_channel_id=is.null&status=eq.PENDING_REVIEW&select=id",
@@ -906,11 +1055,14 @@ async def backfill_legacy_pending_seller_listings(seller_id: int, channel_id: in
     return len(rows)
 
 async def find_or_adopt_seller_ticket(guild: discord.Guild, sell_category: discord.CategoryChannel, seller: discord.Member) -> Optional[discord.TextChannel]:
+    # First use durable topic metadata across the whole guild. Staff may move a
+    # ticket to another category; that must not create a duplicate seller room.
     for channel in guild.text_channels:
         meta = parse_seller_ticket_topic(channel.topic)
         if meta and int(meta.get("seller_id", 0)) == int(seller.id):
             return channel
 
+    # Backward compatibility for seller rooms created before V5.60.
     clean_user_name = seller.name.lower().replace(" ", "-")
     legacy_name = f"🏷️・sell-{clean_user_name}"
     legacy = discord.utils.get(sell_category.text_channels, name=legacy_name)
@@ -936,6 +1088,8 @@ async def mark_seller_ticket_rejection_hold(channel: discord.TextChannel, seller
     )
 
 async def mark_seller_ticket_submission_active(channel: discord.TextChannel, seller_id: int):
+    # A fresh submission means the seller acted on any previous rejection and the
+    # ticket must remain open while staff review is pending.
     await set_seller_ticket_state(
         channel, seller_id, close_at=0, hold_open=False,
         reason="Seller submitted another listing",
@@ -1006,6 +1160,12 @@ async def ensure_seller_portal_launcher(channel: discord.TextChannel, seller_id:
     await rotate_seller_portal_session(channel, seller, launcher_msg)
 
 def infer_legacy_seller_id_from_channel(channel: discord.TextChannel) -> Optional[int]:
+    """Infer the seller from legacy private-room permission overwrites.
+
+    A seller room historically grants View Channel directly to exactly one
+    non-bot member; the Admin is a role overwrite, not a member overwrite.
+    Ambiguous rooms are intentionally skipped instead of guessing.
+    """
     candidates = []
     for target, overwrite in channel.overwrites.items():
         if isinstance(target, discord.Member) and not target.bot and overwrite.view_channel is True:
@@ -1033,6 +1193,10 @@ async def refresh_seller_portal_launchers():
         candidate_channels = list(guild.text_channels)
         for channel in candidate_channels:
             meta = parse_seller_ticket_topic(channel.topic)
+
+            # Migrate an approved V5.57/V5.58 seller room whose topic points to
+            # a single published listing. Multi-listing can no longer use that
+            # single-offer topic, so preserve the relation in Supabase instead.
             if not meta:
                 old_listing_meta = parse_seller_listing_topic(channel.topic)
                 if old_listing_meta:
@@ -1047,6 +1211,9 @@ async def refresh_seller_portal_launchers():
                     except Exception as e:
                         print(f"Legacy approved seller-room migration error for {channel.id}: {e}")
 
+            # Migrate an older seller room with no structured topic. Only inspect
+            # channels in the seller category and only adopt when ownership is
+            # unambiguous from Discord permission overwrites.
             if not meta and isinstance(sell_category, discord.CategoryChannel) and channel.category_id == sell_category.id:
                 seller_id = infer_legacy_seller_id_from_channel(channel)
                 if seller_id:
@@ -1064,6 +1231,10 @@ async def refresh_seller_portal_launchers():
                 continue
             try:
                 seller_id = int(meta["seller_id"])
+                # V5.64 migration: old seller rooms may still carry a 60-second
+                # deadline or the legacy rejection hold. Move them once to the
+                # 24-hour policy so deploying this version cannot unexpectedly
+                # close an existing seller room.
                 if meta.get("policy") != SELLER_TICKET_CLOSE_POLICY:
                     if await seller_ticket_has_pending(channel.id):
                         await set_seller_ticket_state(
@@ -1084,6 +1255,8 @@ async def refresh_seller_portal_launchers():
                         )
                     meta = parse_seller_ticket_topic(channel.topic)
                 await ensure_seller_portal_launcher(channel, seller_id)
+                # Recover the rare case where Railway restarted after the last
+                # review finished but before the 60-second deadline was stored.
                 if (not meta.get("hold_open") and not meta.get("close_at")
                         and await seller_ticket_has_any_listing(channel.id)
                         and not await seller_ticket_has_pending(channel.id)):
@@ -1107,6 +1280,7 @@ async def seller_ticket_autoclose_task():
                             reason="Automatic close cancelled after final safety check",
                         )
                         continue
+                    # Clear the deadline first so the scanner cannot start a second close.
                     await set_seller_ticket_state(
                         channel, int(meta["seller_id"]), close_at=0, hold_open=False,
                         reason="Automatic seller ticket close started",
@@ -1117,38 +1291,103 @@ async def seller_ticket_autoclose_task():
                 except Exception as e:
                     print(f"Seller ticket auto-close error for {channel.id}: {e}")
 
-# ======================== نظام الترحيب الجديد المرتب (الـ GIF في المنتصف والبروفايل بالزاوية) ========================
-def build_welcome_embed(member: discord.Member, guild: discord.Guild) -> discord.Embed:
-    serverName = "Pedrao22k"
-    welcomeGif = "https://media.giphy.com/media/xT5LMFZDsj0AKUDYTS/giphy.gif"
-    
+def build_welcome_embed(member: discord.Member, guild: discord.Guild, *, with_gif: bool = True) -> discord.Embed:
+    """Minimal animated welcome card shown when a real member joins the server."""
     embed = discord.Embed(
-        color=0xFF8C00, # برتقالي فخم
-        title=f"{serverName}",
-        description=f"⚡ WELCOME TO {serverName.upper()}, <@{member.id}>."
+        description=f"Hello {member.display_name}!\nWelcome to **_PEDRAO22K_**",
+        color=0xF5C451,
     )
-    embed.set_image(url=welcomeGif) # الـ GIF في المنتصف
-    embed.set_thumbnail(url=member.display_avatar.url) # صورة البروفايل في الزاوية
+    embed.set_thumbnail(url=member.display_avatar.url)
+    if with_gif:
+        embed.set_image(url="attachment://welcome_pedrao22k.gif")
     return embed
+
+
+BOT_NICKNAME_ANIMATION_FRAMES = [
+    "✦Pedrao22k",
+    "P✦edrao22k",
+    "Pe✦drao22k",
+    "Ped✦rao22k",
+    "Pedr✦ao22k",
+    "Pedra✦o22k",
+    "Pedrao✦22k",
+    "Pedrao2✦2k",
+    "Pedrao22✦k",
+    "Pedrao22k✦",
+]
+BOT_NICKNAME_ANIMATION_INTERVAL_SECONDS = 20
+
+
+async def animated_bot_nickname_task():
+    """Animate the bot's server nickname conservatively without affecting its application identity."""
+    await bot.wait_until_ready()
+
+    category = bot.get_channel(TICKET_CATEGORY_ID)
+    guild = category.guild if isinstance(category, discord.CategoryChannel) else (bot.guilds[0] if bot.guilds else None)
+    if guild is None:
+        print("Animated nickname disabled: no guild is available.")
+        return
+
+    me = guild.me or guild.get_member(bot.user.id if bot.user else 0)
+    if me is None:
+        print("Animated nickname disabled: bot member could not be resolved.")
+        return
+
+    frame_index = 0
+    last_applied = None
+    while not bot.is_closed():
+        frame = BOT_NICKNAME_ANIMATION_FRAMES[frame_index % len(BOT_NICKNAME_ANIMATION_FRAMES)]
+        frame_index += 1
+        try:
+            if frame != last_applied and me.display_name != frame:
+                await me.edit(nick=frame, reason="Pedrao22k animated bot nickname")
+                last_applied = frame
+        except discord.Forbidden:
+            print("Animated nickname disabled: missing permission to change the bot nickname.")
+            return
+        except discord.HTTPException as e:
+            print(f"Animated nickname update failed: {e}")
+        except Exception as e:
+            print(f"Animated nickname unexpected error: {e}")
+
+        await asyncio.sleep(BOT_NICKNAME_ANIMATION_INTERVAL_SECONDS)
+
 
 @bot.event
 async def on_member_join(member: discord.Member):
+    # Do not publish a public welcome for bots/integrations joining the guild.
     if member.bot:
         return
 
     channel = member.guild.get_channel(WELCOME_CHANNEL_ID)
     if not channel:
+        print(f"Welcome channel {WELCOME_CHANNEL_ID} was not found in guild {member.guild.id}.")
         return
 
+    gif_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "welcome_pedrao22k.gif")
+
     try:
-        embed = build_welcome_embed(member, member.guild)
-        await channel.send(embed=embed)
+        if os.path.isfile(gif_path):
+            welcome_file = discord.File(gif_path, filename="welcome_pedrao22k.gif")
+            await channel.send(
+                embed=build_welcome_embed(member, member.guild, with_gif=True),
+                file=welcome_file,
+            )
+        else:
+            print(f"Welcome GIF missing at {gif_path}; sending safe fallback without animation.")
+            await channel.send(embed=build_welcome_embed(member, member.guild, with_gif=False))
     except Exception as e:
         print(f"Welcome message error for member {member.id}: {e}")
-# ==========================================================================================================
+        try:
+            await channel.send(embed=build_welcome_embed(member, member.guild, with_gif=False))
+        except Exception as fallback_error:
+            print(f"Welcome fallback error for member {member.id}: {fallback_error}")
 
 @bot.event
 async def on_message(message: discord.Message):
+    # Keep the public Accounts Shop entry channel permanently clean.
+    # Normal members are blocked by channel permissions; this also removes
+    # messages from admins/other bots that can bypass those overwrites.
     if getattr(message.channel, "id", None) == SHOP_ENTRY_CHANNEL_ID:
         if not bot.user or message.author.id != bot.user.id:
             try:
@@ -1224,6 +1463,8 @@ class CloseTicketView(View):
             description="Are you sure you want to close this ticket?\nA full transcript will be automatically saved to staff logs.",
             color=0xF59E0B
         )
+        # Keep the confirmation private so repeated/abandoned confirmations never
+        # clutter the ticket for everyone.
         await interaction.response.send_message(embed=embed, view=ConfirmCloseView(), ephemeral=True)
 
 class TicketSelect(Select):
@@ -1350,6 +1591,8 @@ class RejectReasonModal(Modal, title="Listing Rejection Reason"):
             await schedule_seller_ticket_close_if_idle(self.ticket_channel, int(self.seller.id))
         except Exception as e:
             print(f"Seller ticket close scheduling after rejection error: {e}")
+        # No second seller message here. The canonical red status card already
+        # contains the decision, reason, and recovery instructions.
 
 class MarketplaceCarouselView(View):
     def __init__(self, images: list, embed_data: discord.Embed, is_sold: bool = False):
@@ -1411,7 +1654,7 @@ class MarketplaceCarouselView(View):
 
         existing = discord.utils.get(category.text_channels, name=channel_name)
         if existing:
-            return await interaction.response.send_message(f"⚠️️ You already have an open buying ticket: {existing.mention}", ephemeral=True)
+            return await interaction.response.send_message(f"⚠️ You already have an open buying ticket: {existing.mention}", ephemeral=True)
 
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
@@ -1531,6 +1774,8 @@ class AdminApprovalView(View):
                     await persist_seller_status_message_id(self.listing_id, self.launcher_msg.id)
                 except Exception as e:
                     print(f"Error editing seller status card to approved: {e}")
+            # Editing a Discord message does not create a new notification. Keep one
+            # concise seller ping for approval, without repeating the full listing data.
             try:
                 await self.ticket_channel.send(
                     f"✅ {self.seller.mention} **{format_offer_id(offer_number)} approved and published in the Accounts Shop.**"
@@ -1562,6 +1807,7 @@ class AdminApprovalView(View):
             approval_view=self
         )
         await interaction.response.send_modal(modal)
+
 
 class SoldConfirmationView(View):
     def __init__(self, requester_id: int, listing: dict, source_channel_id: Optional[int]):
@@ -1607,6 +1853,8 @@ class SoldConfirmationView(View):
         try:
             interested = await get_interested_active_tickets(listing_id)
             for ticket, link in interested:
+                # Idempotency: do not send the SOLD notice twice for the same
+                # ticket/offer even if the command is retried.
                 if link.get("sold_notified_at"):
                     continue
                 channel = interaction.guild.get_channel(int(ticket["channel_id"])) if interaction.guild else None
@@ -1635,6 +1883,7 @@ class SoldConfirmationView(View):
             ephemeral=True,
         )
 
+
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="✖️")
     async def cancel_sold(self, interaction: discord.Interaction, button: Button):
         if interaction.user.id != self.requester_id:
@@ -1644,15 +1893,15 @@ class SoldConfirmationView(View):
         await interaction.response.edit_message(content="❌ Sold action cancelled.", embed=None, view=self)
 
 async def get_discord_user_from_access_token(access_token: str):
-    timeout = aiohttp.ClientTimeout(total=15)
-    async with aiohttp.ClientSession(timeout=timeout) as client:
-        async with client.get(
-            "https://discord.com/api/v10/users/@me",
-            headers={"Authorization": f"Bearer {access_token}"},
-        ) as response:
-            if response.status != 200:
-                raise RuntimeError("Discord authentication failed.")
-            return await response.json()
+    client = await get_shared_http_session()
+    async with client.get(
+        "https://discord.com/api/v10/users/@me",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=aiohttp.ClientTimeout(total=15),
+    ) as response:
+        if response.status != 200:
+            raise RuntimeError("Discord authentication failed.")
+        return await response.json()
 
 async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
     category = bot.get_channel(TICKET_CATEGORY_ID)
@@ -1669,7 +1918,7 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
     listing_id = str(listing["id"])
     offer_number = int(listing["offer_number"])
 
-    async with purchase_ticket_lock:
+    async with get_purchase_ticket_lock(buyer_id):
         ticket_row = await get_active_purchase_ticket(buyer_id)
         channel = None
 
@@ -1678,9 +1927,12 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
             if isinstance(candidate, discord.TextChannel):
                 channel = candidate
             else:
+                # Stale DB row: the Discord channel was deleted outside the normal
+                # Close Ticket flow. Close it in DB and allow a new ticket.
                 await close_persisted_purchase_ticket(int(ticket_row["channel_id"]))
                 ticket_row = None
 
+        # Backward-compatible migration for a V5.58 ticket that already exists.
         if channel is None:
             for candidate in guild.text_channels:
                 meta = parse_purchase_ticket_topic(candidate.topic)
@@ -1733,6 +1985,7 @@ async def create_or_reuse_purchase_ticket(buyer_id: int, listing: dict):
         if existing_offer:
             return channel, True, True
 
+        # Persist first to make rapid duplicate Contact Seller clicks idempotent.
         link = await add_ticket_offer(ticket_id, listing)
         try:
             embed = discord.Embed(
@@ -1778,19 +2031,22 @@ async def handle_discord_exchange(request):
         "grant_type": "authorization_code",
         "code": code,
     }
-    timeout = aiohttp.ClientTimeout(total=20)
-    async with aiohttp.ClientSession(timeout=timeout) as client:
-        async with client.post("https://discord.com/api/oauth2/token", data=form) as response:
-            data = await response.json(content_type=None)
-            if response.status != 200 or not data.get("access_token"):
-                print(f"Discord OAuth exchange error: {response.status} {str(data)[:300]}")
-                return api_json({"status": "error", "error": "Discord authorization failed."}, status=401)
-            return api_json({
-                "access_token": data["access_token"],
-                "token_type": data.get("token_type", "Bearer"),
-                "expires_in": data.get("expires_in"),
-                "scope": data.get("scope", ""),
-            })
+    client = await get_shared_http_session()
+    async with client.post(
+        "https://discord.com/api/oauth2/token",
+        data=form,
+        timeout=aiohttp.ClientTimeout(total=20),
+    ) as response:
+        data = await response.json(content_type=None)
+        if response.status != 200 or not data.get("access_token"):
+            print(f"Discord OAuth exchange error: {response.status} {str(data)[:300]}")
+            return api_json({"status": "error", "error": "Discord authorization failed."}, status=401)
+        return api_json({
+            "access_token": data["access_token"],
+            "token_type": data.get("token_type", "Bearer"),
+            "expires_in": data.get("expires_in"),
+            "scope": data.get("scope", ""),
+        })
 
 async def handle_contact_seller(request):
     auth_header = request.headers.get("Authorization", "")
@@ -1834,6 +2090,11 @@ async def handle_contact_seller(request):
 
 
 async def handle_activity_context(request):
+    """Resolve which public offer belongs to the Discord channel that launched the Activity.
+
+    This endpoint exposes only public listing identifiers. The channel topic is
+    written by this bot and is the source of the ticket -> offer mapping.
+    """
     raw_channel_id = str(request.query.get("channel_id", "")).strip()
     if not raw_channel_id.isdigit():
         return api_json({"status": "ok", "offer_number": None, "listing_id": None})
@@ -1897,6 +2158,7 @@ class MarketplaceLauncherView(View):
 
         existing = await find_or_adopt_seller_ticket(guild, sell_category, interaction.user)
         if existing:
+            # Make sure a restart/old session never leaves the seller with a dead portal button.
             try:
                 await ensure_seller_portal_launcher(existing, int(interaction.user.id))
             except Exception as e:
@@ -1977,6 +2239,7 @@ HTML_PAGE = """<!DOCTYPE html>
         .price-row input { flex: 2; }
         .price-row select { flex: 1; }
         
+        /* تصميم خيارات الإنجازات (Checkboxes) */
         .checkbox-container {
             background: rgba(18, 19, 26, 0.7); border: 1px solid rgba(245, 158, 11, 0.25);
             border-radius: 12px; padding: 15px; margin-bottom: 18px;
@@ -2038,6 +2301,7 @@ HTML_PAGE = """<!DOCTYPE html>
                 </select>
             </div>
 
+            <!-- Optional account highlights -->
             <div class="checkbox-container">
                 <div class="checkbox-title">
                     <span>DOES YOUR ACCOUNT HAVE ANY OF THESE ITEMS?</span>
@@ -2053,6 +2317,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <label for="desc">Offer Description & Details</label>
             <textarea id="desc" rows="4" placeholder="Detail your account: platform, rank, camos, access..." required></textarea>
 
+            <!-- 1. الصورة الأساسية (Cover Thumbnail) -->
             <label>⭐ Primary Cover Thumbnail (Main Image)</label>
             <div class="dropzone" onclick="document.getElementById('coverInput').click()">
                 <div style="font-size: 26px; color: #FFB800;">⚡</div>
@@ -2061,6 +2326,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <input type="file" id="coverInput" accept="image/*" style="display:none;" onchange="handleCoverSelection(this.files[0])">
             <div class="preview-grid" id="coverPreview"></div>
 
+            <!-- 2. الصور الثانوية (Gallery) -->
             <label>📸 OFFER GALLERY CAPTURES</label>
             <div class="dropzone" onclick="document.getElementById('secondaryInput').click()">
                 <div style="font-size: 26px; color: #FFB800;">📸</div>
@@ -2286,6 +2552,8 @@ async def handle_web_page(request):
             meta = parse_seller_ticket_topic(channel.topic)
             if meta and not meta.get("hold_open"):
                 try:
+                    # Seller actively opened the form. Give them enough time to
+                    # finish it instead of deleting the ticket mid-submission.
                     existing_close_at = int(meta.get("close_at") or 0)
                     grace_close_at = int(time.time()) + SELLER_PORTAL_ACTIVE_GRACE_SECONDS
                     await set_seller_ticket_state(
@@ -2350,6 +2618,9 @@ async def _handle_finalize_listing(request, data):
         items_list = data.get("items", "None")
         description = data.get("description", "")
 
+        # Persist every Seller Portal highlight. The legacy `category` field
+        # remains populated with the first supported highlight so older Shop
+        # builds and existing integrations keep working during rollout.
         selected_highlights = {
             item.strip().lower()
             for item in str(items_list).split("•")
@@ -2403,6 +2674,8 @@ async def _handle_finalize_listing(request, data):
             for sp in secondary_paths:
                 if os.path.isfile(sp):
                     all_paths.append(sp)
+            # Avoid storing the cover (or any screenshot) twice when the same
+            # file is selected more than once in the Seller Portal.
             all_paths = dedupe_file_paths_by_content(all_paths)
             session_info["all_paths"] = all_paths
         all_paths = session_info["all_paths"]
@@ -2410,6 +2683,7 @@ async def _handle_finalize_listing(request, data):
         if not cover_path or len(all_paths) < 2:
             return web.json_response({"status": "error", "error": "Upload a cover image and at least one different gallery image."}, status=400)
 
+        # A stable UUID per portal session prevents duplicate records on a retry.
         listing_id = session_info.get("listing_id") or str(uuid.uuid5(uuid.NAMESPACE_URL, f"pedrao22k-listing:{session_id}"))
         if not session_info.get("listing_id"):
             try:
@@ -2464,6 +2738,8 @@ async def _handle_finalize_listing(request, data):
         if discord_cdn_urls:
             admin_embed.set_image(url=discord_cdn_urls[0])
 
+        # Every listing gets its own status message. The portal launcher stays
+        # untouched so the seller can submit another account with one click.
         submission_msg = await ticket_channel.send(embed=submitted_embed)
         await persist_seller_status_message_id(listing_id, submission_msg.id)
 
@@ -2519,6 +2795,7 @@ async def handle_finalize_listing(request):
     session_info = active_web_sessions.get(session_id)
     if not session_info:
         return web.json_response({"status": "error", "error": "Session expired. Please reopen the seller portal."}, status=400)
+    # Serialize repeated clicks/retries for this portal session.
     async with session_info["finalize_lock"]:
         return await _handle_finalize_listing(request, data)
 
@@ -2590,6 +2867,10 @@ slash_commands_synced = False
 @bot.event
 async def on_ready():
     global persistent_views_registered, background_tasks_started, slash_commands_synced
+    try:
+        await get_shared_http_session()
+    except Exception as e:
+        print(f"Shared HTTP session warm-up error: {e}")
     if not persistent_views_registered:
         bot.add_view(TicketLauncherView())
         bot.add_view(CloseTicketView())
@@ -2604,7 +2885,7 @@ async def on_ready():
         bot.loop.create_task(start_web_server())
         bot.loop.create_task(session_cleaner_task())
         bot.loop.create_task(seller_ticket_autoclose_task())
-        # تم إلغاء مهمة الحركة المزعجة لاسم البوت لكي يثبت تماماً
+        bot.loop.create_task(animated_bot_nickname_task())
         background_tasks_started = True
     try:
         await ensure_shop_entry_message()
@@ -2683,18 +2964,6 @@ async def sold_command(interaction: discord.Interaction, account_id: Optional[st
         view=SoldConfirmationView(interaction.user.id, listing, source_channel_id),
         ephemeral=True,
     )
-
-@bot.command()
-async def test(ctx):
-    channel = ctx.guild.get_channel(WELCOME_CHANNEL_ID)
-    if not channel:
-        return await ctx.send("❌ روم الترحيب غير موجودة أو الأيدي خطأ.")
-    try:
-        embed = build_welcome_embed(ctx.author, ctx.guild)
-        await channel.send(embed=embed)
-        await ctx.send(f"✅ تم إرسال ترحيب التجربة إلى {channel.mention} بنجاح!", delete_after=5)
-    except Exception as e:
-        await ctx.send(f"❌ حدث خطأ أثناء إرسال الترحيب: `{e}`")
 
 @bot.command()
 @commands.has_permissions(administrator=True)
@@ -2796,7 +3065,6 @@ async def setup_market(ctx):
     if ctx.guild.icon:
         guild_icon_url = ctx.guild.icon.url
         embed.set_author(name="Pedrao22k Marketplace", icon_url=guild_icon_url)
-        embed.set_thumbnail(url=guild_icon_url)
     embed.set_footer(text="Pedrao22k. | Verified Seller Hub")
     await ctx.send(embed=embed, view=MarketplaceLauncherView())
 
