@@ -1371,6 +1371,11 @@ def get_purchase_ticket_lock(buyer_id: int) -> asyncio.Lock:
 
 os.makedirs("uploaded_screenshots", exist_ok=True)
 active_web_sessions = {}
+# In-memory grace prevents the auto-close scanner racing a non-blocking topic update.
+# A restart falls back to the existing durable Discord topic state.
+seller_portal_open_grace = {}
+seller_portal_grace_tasks = {}
+
 
 
 def cleanup_session_files(session_info: dict | None):
@@ -1423,10 +1428,12 @@ def build_seller_portal_welcome_embed(seller) -> discord.Embed:
     )
     return embed
 
-def register_seller_portal_session(seller_id: int, channel_id: int, launcher_msg: discord.Message, *, session_id: Optional[str] = None) -> str:
+def register_seller_portal_session(seller_id: int, channel_id: int, launcher_msg: discord.Message, *, session_id: Optional[str] = None, keep_finalized_alias: bool = False) -> str:
     # One active portal session per seller room. Invalidate stale links and clean their temp files.
     for sid, data in list(active_web_sessions.items()):
         if int(data.get("channel_id", 0) or 0) == int(channel_id):
+            if keep_finalized_alias and data.get("finalized"):
+                continue
             cleanup_session_files(data)
             active_web_sessions.pop(sid, None)
 
@@ -1460,6 +1467,55 @@ async def set_seller_ticket_state(channel: discord.TextChannel, seller_id: int, 
         topic=seller_ticket_topic(seller_id, close_at=close_at, hold_open=hold_open),
         reason=reason,
     )
+
+async def persist_seller_portal_open_grace(channel: discord.TextChannel, seller_id: int):
+    """Persist only a genuinely active close deadline, outside the HTTP request."""
+    channel_id = channel.id
+    try:
+        # A serialized, coalesced update avoids repeated channel PATCHes on refresh.
+        while True:
+            meta = parse_seller_ticket_topic(channel.topic)
+            requested = seller_portal_open_grace.get(channel_id, 0)
+            if not meta or meta.get("hold_open") or not meta.get("close_at"):
+                return
+            existing = int(meta["close_at"])
+            if existing >= requested:
+                return
+            try:
+                await asyncio.wait_for(
+                    set_seller_ticket_state(
+                        channel, seller_id, close_at=requested, hold_open=False,
+                        reason="Seller Portal open; extend existing automatic close grace",
+                    ), timeout=12,
+                )
+            except asyncio.TimeoutError:
+                print(f"Seller portal grace persistence deferred by Discord for {channel_id}.")
+                return
+            except Exception as exc:
+                print(f"Seller portal grace persistence error for {channel_id}: {exc}")
+                return
+    finally:
+        seller_portal_grace_tasks.pop(channel_id, None)
+
+
+def record_seller_portal_open(channel: discord.TextChannel, seller_id: int):
+    """O(1) HTTP path: never await a Discord channel PATCH when opening the form."""
+    meta = parse_seller_ticket_topic(channel.topic)
+    if not meta or meta.get("hold_open") or not int(meta.get("close_at") or 0):
+        return
+    desired = int(time.time()) + SELLER_PORTAL_ACTIVE_GRACE_SECONDS
+    seller_portal_open_grace[channel.id] = max(
+        seller_portal_open_grace.get(channel.id, 0), desired
+    )
+    # Do not PATCH for every reload if durable deadline already provides full grace.
+    if int(meta["close_at"]) >= seller_portal_open_grace[channel.id]:
+        return
+    task = seller_portal_grace_tasks.get(channel.id)
+    if task is None or task.done():
+        seller_portal_grace_tasks[channel.id] = asyncio.create_task(
+            persist_seller_portal_open_grace(channel, seller_id)
+        )
+
 
 async def seller_ticket_has_pending(channel_id: int) -> bool:
     rows = await supabase_request(
@@ -1552,8 +1608,8 @@ async def schedule_seller_ticket_close_if_idle(channel: discord.TextChannel, sel
         pass
     return True
 
-async def rotate_seller_portal_session(channel: discord.TextChannel, seller, launcher_msg: discord.Message) -> discord.Message:
-    session_id = new_seller_portal_session_id()
+async def rotate_seller_portal_session(channel: discord.TextChannel, seller, launcher_msg: discord.Message, *, prepared_session_id: Optional[str] = None) -> discord.Message:
+    session_id = prepared_session_id or new_seller_portal_session_id()
     view = DirectPortalLauncherView(session_id=session_id)
     try:
         await launcher_msg.edit(embed=build_seller_portal_welcome_embed(seller), view=view)
@@ -1565,7 +1621,12 @@ async def rotate_seller_portal_session(channel: discord.TextChannel, seller, lau
             embed=build_seller_portal_welcome_embed(seller),
             view=view,
         )
-    register_seller_portal_session(seller.id, channel.id, launcher_msg, session_id=session_id)
+    if prepared_session_id is None:
+        register_seller_portal_session(seller.id, channel.id, launcher_msg, session_id=session_id)
+    else:
+        active = active_web_sessions.get(prepared_session_id)
+        if active:
+            active["launcher_msg"] = launcher_msg
     return launcher_msg
 
 
@@ -1574,6 +1635,7 @@ async def post_finalize_seller_portal_housekeeping(
     seller,
     launcher_msg: discord.Message,
     seller_id: int,
+    prepared_session_id: str,
 ):
     """Run non-critical Discord housekeeping after the browser already received success.
 
@@ -1582,25 +1644,38 @@ async def post_finalize_seller_portal_housekeeping(
     must never keep the Seller Portal stuck on PROCESSING after staff already got
     the submission.
     """
+    # Rotate FIRST: a rate-limited channel topic PATCH must not delay the next link.
+    # Register a replacement session only after the Discord launcher edit succeeds.
     try:
         await asyncio.wait_for(
-            mark_seller_ticket_submission_active(ticket_channel, seller_id),
-            timeout=10,
+            rotate_seller_portal_session(ticket_channel, seller, launcher_msg, prepared_session_id=prepared_session_id),
+            timeout=12,
         )
     except asyncio.TimeoutError:
-        print(f"Seller ticket state update timed out after finalize for {ticket_channel.id}.")
-    except Exception as e:
-        print(f"Seller ticket submission state error: {e}")
-
-    try:
-        await asyncio.wait_for(
-            rotate_seller_portal_session(ticket_channel, seller, launcher_msg),
-            timeout=10,
-        )
-    except asyncio.TimeoutError:
-        print(f"Seller portal rotation timed out after finalize for {ticket_channel.id}.")
+        print(f"Seller portal rotation timed out after finalize for {ticket_channel.id}; retrying in background.")
+        # Never invalidate a link until the new button is successfully published.
+        try:
+            await asyncio.wait_for(
+                rotate_seller_portal_session(ticket_channel, seller, launcher_msg, prepared_session_id=prepared_session_id), timeout=60
+            )
+        except Exception as exc:
+            print(f"Seller portal rotation retry failed for {ticket_channel.id}: {exc}")
     except Exception as e:
         print(f"Seller portal rotation error: {e}")
+
+    # Pending review guarantees the room remains open. Avoid a needless PATCH
+    # when the persisted topic is already close_at=0, hold=0.
+    meta = parse_seller_ticket_topic(ticket_channel.topic)
+    if meta and (int(meta.get("close_at") or 0) or meta.get("hold_open")):
+        try:
+            await asyncio.wait_for(
+                mark_seller_ticket_submission_active(ticket_channel, seller_id),
+                timeout=12,
+            )
+        except asyncio.TimeoutError:
+            print(f"Seller ticket state update timed out after finalize for {ticket_channel.id}.")
+        except Exception as e:
+            print(f"Seller ticket submission state error: {e}")
 
 async def ensure_seller_portal_launcher(channel: discord.TextChannel, seller_id: int):
     seller = channel.guild.get_member(int(seller_id))
@@ -1741,6 +1816,10 @@ async def seller_ticket_autoclose_task():
             for channel in list(guild.text_channels):
                 meta = parse_seller_ticket_topic(channel.topic)
                 if not meta or not meta.get("close_at") or int(meta["close_at"]) > now:
+                    continue
+                # Protect an actively open Portal even while Discord PATCH is
+                # waiting on its rate limiter; expiry is checked again each scan.
+                if seller_portal_open_grace.get(channel.id, 0) > now:
                     continue
                 try:
                     if meta.get("hold_open") or await seller_ticket_has_pending(channel.id):
@@ -3388,25 +3467,15 @@ async def ping_handler(request):
 async def handle_web_page(request):
     session_id = str(request.query.get("session", "")).strip()
     session_info = active_web_sessions.get(session_id)
+    if session_info and session_info.get("finalized") and session_info.get("successor_session_id"):
+        successor_id = session_info["successor_session_id"]
+        if successor_id in active_web_sessions:
+            raise web.HTTPFound(location=f"/upload?session={successor_id}")
     if session_info and not session_info.get("finalized"):
         session_info["last_activity_at"] = utc_now()
         channel = bot.get_channel(int(session_info.get("channel_id", 0) or 0))
         if isinstance(channel, discord.TextChannel):
-            meta = parse_seller_ticket_topic(channel.topic)
-            if meta and not meta.get("hold_open"):
-                try:
-                    # Seller actively opened the form. Give them enough time to
-                    # finish it instead of deleting the ticket mid-submission.
-                    existing_close_at = int(meta.get("close_at") or 0)
-                    grace_close_at = int(time.time()) + SELLER_PORTAL_ACTIVE_GRACE_SECONDS
-                    await set_seller_ticket_state(
-                        channel, int(meta["seller_id"]),
-                        close_at=max(existing_close_at, grace_close_at),
-                        hold_open=False,
-                        reason="Seller Portal opened; preserve or extend automatic close grace",
-                    )
-                except Exception as e:
-                    print(f"Seller portal open grace error: {e}")
+            record_seller_portal_open(channel, int(session_info["seller_id"]))
     return web.Response(text=HTML_PAGE, content_type="text/html")
 
 async def handle_upload_images_only(request):
@@ -3824,6 +3893,15 @@ async def _handle_finalize_listing(request, data):
         # non-critical Discord housekeeping so the browser can never remain stuck
         # on PROCESSING just because a channel/message edit is slow.
         session_info["finalized"] = True
+        # Publish the successor in memory before attempting any Discord PATCH.
+        # Until the launcher message is updated, its existing URL redirects to
+        # this ready-to-use successor instead of reopening a finalized form.
+        successor_id = new_seller_portal_session_id()
+        register_seller_portal_session(
+            seller_id, channel_id, launcher_msg,
+            session_id=successor_id, keep_finalized_alias=True,
+        )
+        session_info["successor_session_id"] = successor_id
 
         bot.loop.create_task(
             post_finalize_seller_portal_housekeeping(
@@ -3831,6 +3909,7 @@ async def _handle_finalize_listing(request, data):
                 seller=seller,
                 launcher_msg=launcher_msg,
                 seller_id=seller_id,
+                prepared_session_id=successor_id,
             )
         )
 
@@ -3936,35 +4015,58 @@ background_tasks_started = False
 slash_commands_synced = False
 
 
-async def restore_listing_state_after_startup():
-    """Restore durable listing controls without blocking the Bot/Portal startup path.
+async def _run_startup_maintenance_step(name, operation, timeout_seconds=360):
+    """Run optional restart repairs outside on_ready; bound stalled operations."""
+    for attempt in range(2):
+        try:
+            await asyncio.wait_for(operation(), timeout=timeout_seconds)
+            print(f"Startup maintenance completed: {name}")
+            return
+        except asyncio.CancelledError:
+            raise
+        except (Exception) as exc:
+            print(f"Startup maintenance {name} attempt {attempt + 1}/2: {exc}")
+            if attempt == 0:
+                await asyncio.sleep(10)
+    print(f"Startup maintenance {name} incomplete; normal Bot/Portal service remains online.")
 
-    Discord can legitimately return a long 429 retry window for channel/message edits.
-    Those repairs are important, but they are not prerequisites for serving the Seller
-    Portal or bringing the rest of the bot online. Running them in this background task
-    prevents a single rate-limited Discord PATCH from freezing startup for a minute+.
-    """
-    try:
-        await restore_pending_review_views()
-    except Exception as e:
-        print(f"Pending review restoration error: {e}")
-    try:
-        await reconcile_resolved_listing_messages()
-    except Exception as e:
-        print(f"Resolved listing reconciliation error: {e}")
+
+async def restore_listing_state_after_startup():
+    # These tasks are optional repairs, never prerequisites for the HTTP service.
+    await _run_startup_maintenance_step("pending review views", restore_pending_review_views)
+    await _run_startup_maintenance_step("resolved listing statuses", reconcile_resolved_listing_messages)
+
+
+async def run_discord_startup_maintenance():
+    # Channel permission PATCH, old-ticket edits and guild command sync can hit 429.
+    # Keep all of them outside on_ready so a long retry_after never blocks startup.
+    await _run_startup_maintenance_step("Shop entry channel", ensure_shop_entry_message)
+    await _run_startup_maintenance_step("purchase ticket buttons", refresh_purchase_ticket_activity_buttons)
+    await _run_startup_maintenance_step("seller portal launchers", refresh_seller_portal_launchers)
+
+
+async def sync_slash_commands_after_startup():
+    global slash_commands_synced
+    if slash_commands_synced:
+        return
+    async def sync_commands():
+        category = bot.get_channel(TICKET_CATEGORY_ID)
+        if isinstance(category, discord.CategoryChannel):
+            guild_obj = discord.Object(id=category.guild.id)
+            bot.tree.copy_global_to(guild=guild_obj)
+            synced = await bot.tree.sync(guild=guild_obj)
+            print(f"✅ Synced {len(synced)} slash command(s) to guild {category.guild.id}.")
+        else:
+            synced = await bot.tree.sync()
+            print(f"✅ Synced {len(synced)} global slash command(s).")
+    await _run_startup_maintenance_step("slash command sync", sync_commands)
+    # Subsequent on_ready events must not start a second competing sync.
+    slash_commands_synced = True
 
 
 @bot.event
 async def on_ready():
-    global persistent_views_registered, background_tasks_started, slash_commands_synced
-    try:
-        await get_shared_http_session()
-    except Exception as e:
-        print(f"Shared HTTP session warm-up error: {e}")
-
-    # Register static persistent views synchronously, but never make Discord API repair
-    # calls part of the critical startup path. A 429 on a ticket PATCH must not delay
-    # the Seller Portal or the rest of the service.
+    global persistent_views_registered, background_tasks_started
     if not persistent_views_registered:
         bot.add_view(TicketLauncherView())
         bot.add_view(CloseTicketView())
@@ -3976,35 +4078,14 @@ async def on_ready():
         persistent_views_registered = True
 
     if not background_tasks_started:
-        # Start the web engine first so Seller Portal availability is independent from
-        # Discord repair/rate-limit delays.
+        background_tasks_started = True
         bot.loop.create_task(start_web_server())
         bot.loop.create_task(session_cleaner_task())
         bot.loop.create_task(seller_ticket_autoclose_task())
         bot.loop.create_task(animated_bot_nickname_task())
         bot.loop.create_task(restore_listing_state_after_startup())
-        background_tasks_started = True
-    try:
-        await ensure_shop_entry_message()
-        await refresh_purchase_ticket_activity_buttons()
-        await refresh_seller_portal_launchers()
-    except Exception as e:
-        print(f"Accounts Shop Activity setup error: {e}")
-
-    if not slash_commands_synced:
-        try:
-            category = bot.get_channel(TICKET_CATEGORY_ID)
-            if isinstance(category, discord.CategoryChannel):
-                guild_obj = discord.Object(id=category.guild.id)
-                bot.tree.copy_global_to(guild=guild_obj)
-                synced = await bot.tree.sync(guild=guild_obj)
-                print(f"✅ Synced {len(synced)} slash command(s) to guild {category.guild.id}.")
-            else:
-                synced = await bot.tree.sync()
-                print(f"✅ Synced {len(synced)} global slash command(s).")
-            slash_commands_synced = True
-        except Exception as e:
-            print(f"Slash command sync error: {e}")
+        bot.loop.create_task(run_discord_startup_maintenance())
+        bot.loop.create_task(sync_slash_commands_after_startup())
     print(f"Logged in as {bot.user.name} | Railway Cloud Engine Online 24/7!")
 
 @bot.tree.command(name="sold", description="Mark a published Accounts Shop offer as sold.")
