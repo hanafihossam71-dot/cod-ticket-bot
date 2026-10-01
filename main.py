@@ -84,23 +84,100 @@ def dedupe_file_paths_by_content(paths: list[str]) -> list[str]:
     return unique_paths
 
 STORAGE_IMAGE_CACHE_CONTROL = "31536000"
-COVER_THUMBNAIL_MAX_SIZE = (800, 450)
-COVER_THUMBNAIL_QUALITY = 74
+
+# Seller screenshots remain visually high quality, but the files stored in the Shop
+# are normalized so a single oversized upload can never make View Offer unnecessarily
+# heavy. 1.90 MiB is the normal target; 2 MiB is the absolute safety ceiling.
+SHOP_IMAGE_TARGET_BYTES = int(1.90 * 1024 * 1024)
+SHOP_IMAGE_HARD_LIMIT_BYTES = 2 * 1024 * 1024
+SHOP_IMAGE_WEBP_QUALITY_STEPS = (96, 94, 92, 90, 88, 86, 84, 82, 80, 78, 76, 74, 72, 70, 68)
+
+# The card cover gets its own fast representation only when the already-optimized
+# primary image is still relatively large. Small covers are reused directly, avoiding
+# needless recompression (the old V5.69 74-quality thumbnail could look visibly soft).
+COVER_THUMBNAIL_DIRECT_MAX_BYTES = 220 * 1024
+COVER_THUMBNAIL_TARGET_BYTES = 300 * 1024
+COVER_THUMBNAIL_MAX_SIZE = (1280, 720)
+COVER_THUMBNAIL_QUALITY_STEPS = (96, 94, 92, 90, 88, 86, 84, 82, 80, 78)
+
+def _to_rgb_image(opened: Image.Image) -> Image.Image:
+    image = ImageOps.exif_transpose(opened)
+    if image.mode == "RGBA":
+        rgb = Image.new("RGB", image.size, (8, 8, 8))
+        rgb.paste(image, mask=image.getchannel("A"))
+        return rgb
+    if image.mode != "RGB":
+        return image.convert("RGB")
+    return image.copy()
+
+def _encode_webp_under_limit(image: Image.Image, target_bytes: int, quality_steps: tuple[int, ...], *, min_width: int = 320, min_height: int = 180) -> bytes:
+    """Encode at the highest practical quality while staying below target_bytes.
+
+    Quality is reduced first. Dimensions are only reduced if compression alone is not
+    enough, which preserves screenshot text and UI details as much as possible.
+    """
+    working = image.copy()
+    best_payload: bytes | None = None
+
+    for _ in range(12):
+        for quality in quality_steps:
+            output = io.BytesIO()
+            working.save(output, format="WEBP", quality=quality, method=6)
+            payload = output.getvalue()
+            if best_payload is None or len(payload) < len(best_payload):
+                best_payload = payload
+            if len(payload) <= target_bytes:
+                return payload
+
+        if working.width <= min_width or working.height <= min_height:
+            break
+
+        # Scale based on how far the smallest encoding is from the target, but avoid
+        # one aggressive jump that would unnecessarily destroy legibility.
+        ratio = (target_bytes / max(len(best_payload or b"x"), 1)) ** 0.5
+        ratio = max(0.78, min(0.92, ratio * 0.97))
+        next_size = (max(min_width, int(working.width * ratio)), max(min_height, int(working.height * ratio)))
+        if next_size == working.size:
+            break
+        working = working.resize(next_size, Image.Resampling.LANCZOS)
+
+    if best_payload is None:
+        raise RuntimeError("Could not encode uploaded image.")
+    return best_payload
+
+def optimize_uploaded_image_file(source_path: str) -> str:
+    """Normalize oversized Seller Portal uploads to <=1.90 MiB whenever possible.
+
+    Files already at or under the target are preserved byte-for-byte. Oversized files
+    are converted to high-quality WebP; resolution is reduced only when required.
+    """
+    if not source_path or not os.path.isfile(source_path):
+        raise RuntimeError("Uploaded image is missing from the server.")
+    if os.path.getsize(source_path) <= SHOP_IMAGE_TARGET_BYTES:
+        return source_path
+
+    with Image.open(source_path) as opened:
+        image = _to_rgb_image(opened)
+    payload = _encode_webp_under_limit(image, SHOP_IMAGE_TARGET_BYTES, SHOP_IMAGE_WEBP_QUALITY_STEPS)
+    if len(payload) > SHOP_IMAGE_HARD_LIMIT_BYTES:
+        raise RuntimeError("Could not optimize image below the 2 MB Shop limit.")
+
+    optimized_path = os.path.splitext(source_path)[0] + ".webp"
+    with open(optimized_path, "wb") as optimized_file:
+        optimized_file.write(payload)
+    if optimized_path != source_path:
+        try:
+            os.remove(source_path)
+        except OSError:
+            pass
+    return optimized_path
 
 def build_cover_thumbnail_bytes(source_path: str) -> bytes:
-    """Create a lightweight WebP card cover without touching the original screenshot."""
+    """Create a sharp lightweight card cover while preserving the source aspect ratio."""
     with Image.open(source_path) as opened:
-        image = ImageOps.exif_transpose(opened)
-        if image.mode == "RGBA":
-            rgb = Image.new("RGB", image.size, (8, 8, 8))
-            rgb.paste(image, mask=image.getchannel("A"))
-            image = rgb
-        elif image.mode != "RGB":
-            image = image.convert("RGB")
-        image.thumbnail(COVER_THUMBNAIL_MAX_SIZE, Image.Resampling.LANCZOS)
-        output = io.BytesIO()
-        image.save(output, format="WEBP", quality=COVER_THUMBNAIL_QUALITY, method=4)
-        return output.getvalue()
+        image = _to_rgb_image(opened)
+    image.thumbnail(COVER_THUMBNAIL_MAX_SIZE, Image.Resampling.LANCZOS)
+    return _encode_webp_under_limit(image, COVER_THUMBNAIL_TARGET_BYTES, COVER_THUMBNAIL_QUALITY_STEPS)
 
 shared_http_session: aiohttp.ClientSession | None = None
 shared_http_session_lock = asyncio.Lock()
@@ -177,26 +254,11 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
         if not isinstance(rows, list) or not rows or not rows[0].get("id"):
             raise RuntimeError("Supabase did not return the new listing ID.")
         image_rows = []
-        thumbnail_object_path = None
-        if image_paths:
-            try:
-                thumbnail_payload = await asyncio.to_thread(build_cover_thumbnail_bytes, image_paths[0])
-                thumbnail_object_path = f"{listing_id}/cover-thumb-{uuid.uuid4().hex}.webp"
-                await supabase_request(
-                    "POST",
-                    f"/storage/v1/object/listing-images/{thumbnail_object_path}",
-                    body=thumbnail_payload,
-                    content_type="image/webp",
-                    cache_control=STORAGE_IMAGE_CACHE_CONTROL,
-                )
-                uploaded_objects.append(thumbnail_object_path)
-            except Exception as thumbnail_error:
-                thumbnail_object_path = None
-                print(f"Cover thumbnail generation/upload warning for {listing_id}: {thumbnail_error}")
-
         for index, image_path in enumerate(image_paths):
             if not os.path.isfile(image_path):
                 raise RuntimeError("An uploaded image is missing from the server.")
+            if os.path.getsize(image_path) > SHOP_IMAGE_HARD_LIMIT_BYTES:
+                raise RuntimeError("An uploaded image exceeded the 2 MB Shop limit after optimization.")
             ext = os.path.splitext(image_path)[1].lower() or ".jpg"
             object_path = f"{listing_id}/{index:02d}-{uuid.uuid4().hex}{ext}"
             with open(image_path, "rb") as image_file:
@@ -211,6 +273,28 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
             )
             uploaded_objects.append(object_path)
             image_rows.append({"listing_id": listing_id, "image_url": object_path, "sort_order": index})
+
+        thumbnail_object_path = None
+        if image_rows and image_paths:
+            # A small primary image is already an ideal fast cover. Reusing it preserves
+            # every bit of its quality and avoids V5.69-style double compression.
+            if os.path.getsize(image_paths[0]) <= COVER_THUMBNAIL_DIRECT_MAX_BYTES:
+                thumbnail_object_path = image_rows[0]["image_url"]
+            else:
+                try:
+                    thumbnail_payload = await asyncio.to_thread(build_cover_thumbnail_bytes, image_paths[0])
+                    thumbnail_object_path = f"{listing_id}/cover-thumb-{uuid.uuid4().hex}.webp"
+                    await supabase_request(
+                        "POST",
+                        f"/storage/v1/object/listing-images/{thumbnail_object_path}",
+                        body=thumbnail_payload,
+                        content_type="image/webp",
+                        cache_control=STORAGE_IMAGE_CACHE_CONTROL,
+                    )
+                    uploaded_objects.append(thumbnail_object_path)
+                except Exception as thumbnail_error:
+                    thumbnail_object_path = image_rows[0]["image_url"]
+                    print(f"Cover thumbnail generation/upload warning for {listing_id}: {thumbnail_error}")
 
         if image_rows:
             await supabase_request("POST", "/rest/v1/listing_images", json_data=image_rows)
@@ -1818,7 +1902,7 @@ class AdminApprovalView(View):
                         screenshots=self.count_str,
                         avatar_url=(self.seller.display_avatar.url if self.seller.display_avatar else None),
                     )
-                    await self.launcher_msg.edit(embed=approved_embed, view=ShopLaunchView())
+                    await self.launcher_msg.edit(embed=approved_embed, view=None)
                     await persist_seller_status_message_id(self.listing_id, self.launcher_msg.id)
                 except Exception as e:
                     print(f"Error editing seller status card to approved: {e}")
@@ -2369,7 +2453,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <label>⭐ Primary Cover Thumbnail (Main Image)</label>
             <div class="dropzone" onclick="document.getElementById('coverInput').click()">
                 <div style="font-size: 26px; color: #FFB800;">⚡</div>
-                <div id="coverText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to Upload Primary Cover Image</div>
+                <div id="coverText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to Upload Primary Cover Image • Auto-optimized</div>
             </div>
             <input type="file" id="coverInput" accept="image/*" style="display:none;" onchange="handleCoverSelection(this.files[0])">
             <div class="preview-grid" id="coverPreview"></div>
@@ -2378,7 +2462,7 @@ HTML_PAGE = """<!DOCTYPE html>
             <label>📸 OFFER GALLERY CAPTURES</label>
             <div class="dropzone" onclick="document.getElementById('secondaryInput').click()">
                 <div style="font-size: 26px; color: #FFB800;">📸</div>
-                <div id="secondaryText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to upload gallery screenshots (Max 40)</div>
+                <div id="secondaryText" style="font-weight: 700; color: #FFF; font-size: 13px;">Click to upload gallery screenshots (Max 40) • Images auto-optimized to max 2 MB</div>
             </div>
             <input type="file" id="secondaryInput" multiple accept="image/*" style="display:none;" onchange="handleSecondarySelection(this.files)">
             <div class="preview-grid" id="secondaryPreview"></div>
@@ -2641,7 +2725,14 @@ async def handle_upload_images_only(request):
                             if not chunk:
                                 break
                             f.write(chunk)
-                    saved_path = file_path
+                    try:
+                        saved_path = await asyncio.to_thread(optimize_uploaded_image_file, file_path)
+                    except Exception:
+                        try:
+                            os.remove(file_path)
+                        except OSError:
+                            pass
+                        raise
 
         if not session_id or session_id not in active_web_sessions:
             return web.json_response({"status": "error", "error": "Session expired or bot restarted."}, status=400)
@@ -2927,7 +3018,6 @@ async def on_ready():
         bot.add_view(MarketplaceCarouselView(images=[], embed_data=discord.Embed()))
         bot.add_view(ShopLaunchView())
         bot.add_view(PurchaseOfferActivityView())
-        bot.add_view(SellerApprovedActivityView())
         persistent_views_registered = True
     if not background_tasks_started:
         bot.loop.create_task(start_web_server())
