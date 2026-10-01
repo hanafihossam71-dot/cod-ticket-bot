@@ -14,6 +14,7 @@ import weakref
 import aiohttp
 from aiohttp import web
 from typing import Optional
+from PIL import Image, ImageOps
 
 # ======================== بيانات السيرفر والتصنيفات ========================
 TOKEN = os.environ.get("DISCORD_TOKEN", "")
@@ -82,6 +83,25 @@ def dedupe_file_paths_by_content(paths: list[str]) -> list[str]:
         unique_paths.append(path)
     return unique_paths
 
+STORAGE_IMAGE_CACHE_CONTROL = "31536000"
+COVER_THUMBNAIL_MAX_SIZE = (800, 450)
+COVER_THUMBNAIL_QUALITY = 74
+
+def build_cover_thumbnail_bytes(source_path: str) -> bytes:
+    """Create a lightweight WebP card cover without touching the original screenshot."""
+    with Image.open(source_path) as opened:
+        image = ImageOps.exif_transpose(opened)
+        if image.mode == "RGBA":
+            rgb = Image.new("RGB", image.size, (8, 8, 8))
+            rgb.paste(image, mask=image.getchannel("A"))
+            image = rgb
+        elif image.mode != "RGB":
+            image = image.convert("RGB")
+        image.thumbnail(COVER_THUMBNAIL_MAX_SIZE, Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="WEBP", quality=COVER_THUMBNAIL_QUALITY, method=4)
+        return output.getvalue()
+
 shared_http_session: aiohttp.ClientSession | None = None
 shared_http_session_lock = asyncio.Lock()
 
@@ -105,7 +125,7 @@ async def close_shared_http_session():
         await shared_http_session.close()
     shared_http_session = None
 
-async def supabase_request(method: str, endpoint: str, *, json_data=None, body=None, content_type=None):
+async def supabase_request(method: str, endpoint: str, *, json_data=None, body=None, content_type=None, cache_control=None):
     if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
         raise RuntimeError("Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in Railway.")
     headers = {
@@ -118,6 +138,8 @@ async def supabase_request(method: str, endpoint: str, *, json_data=None, body=N
     if content_type:
         headers["Content-Type"] = content_type
         headers["x-upsert"] = "false"
+        if cache_control:
+            headers["cache-control"] = cache_control
     client = await get_shared_http_session()
     async with client.request(method, f"{SUPABASE_URL}{endpoint}", headers=headers, json=json_data, data=body) as response:
         text_body = await response.text()
@@ -155,6 +177,23 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
         if not isinstance(rows, list) or not rows or not rows[0].get("id"):
             raise RuntimeError("Supabase did not return the new listing ID.")
         image_rows = []
+        thumbnail_object_path = None
+        if image_paths:
+            try:
+                thumbnail_payload = await asyncio.to_thread(build_cover_thumbnail_bytes, image_paths[0])
+                thumbnail_object_path = f"{listing_id}/cover-thumb-{uuid.uuid4().hex}.webp"
+                await supabase_request(
+                    "POST",
+                    f"/storage/v1/object/listing-images/{thumbnail_object_path}",
+                    body=thumbnail_payload,
+                    content_type="image/webp",
+                    cache_control=STORAGE_IMAGE_CACHE_CONTROL,
+                )
+                uploaded_objects.append(thumbnail_object_path)
+            except Exception as thumbnail_error:
+                thumbnail_object_path = None
+                print(f"Cover thumbnail generation/upload warning for {listing_id}: {thumbnail_error}")
+
         for index, image_path in enumerate(image_paths):
             if not os.path.isfile(image_path):
                 raise RuntimeError("An uploaded image is missing from the server.")
@@ -163,7 +202,13 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
             with open(image_path, "rb") as image_file:
                 payload = image_file.read()
             mime = "image/png" if ext == ".png" else "image/webp" if ext == ".webp" else "image/gif" if ext == ".gif" else "image/jpeg"
-            await supabase_request("POST", f"/storage/v1/object/listing-images/{object_path}", body=payload, content_type=mime)
+            await supabase_request(
+                "POST",
+                f"/storage/v1/object/listing-images/{object_path}",
+                body=payload,
+                content_type=mime,
+                cache_control=STORAGE_IMAGE_CACHE_CONTROL,
+            )
             uploaded_objects.append(object_path)
             image_rows.append({"listing_id": listing_id, "image_url": object_path, "sort_order": index})
 
@@ -172,7 +217,10 @@ async def create_supabase_listing(listing_id: str, seller_id: int, seller_ticket
             await supabase_request(
                 "PATCH",
                 f"/rest/v1/listings?id=eq.{listing_id}",
-                json_data={"cover_image_path": image_rows[0]["image_url"]},
+                json_data={
+                    "cover_image_path": image_rows[0]["image_url"],
+                    "cover_thumbnail_path": thumbnail_object_path or image_rows[0]["image_url"],
+                },
             )
         return listing_id
     except Exception:
